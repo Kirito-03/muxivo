@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: muxivo_app
     restart: unless-stopped
+    init: true
+    shm_size: "1gb"
     environment:
       PORT: 7860
       MEDIA_DOWNLOADER_COOKIES_INSTAGRAM_FILE: /app/cookies/www.instagram.com_cookies.txt

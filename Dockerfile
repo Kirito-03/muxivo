@@ -14,15 +14,20 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
 RUN mkdir -p /app/downloads /app/preview_cache /app/served_files /app/cookies \
     && chown -R pwuser:pwuser /app
 
-USER pwuser
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 7860
 
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:7860", "--timeout", "180", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+USER root
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["sh", "-c", "gunicorn -w ${GUNICORN_WORKERS:-2} -b 0.0.0.0:${PORT:-7860} --timeout ${GUNICORN_TIMEOUT:-180} --access-logfile - --error-logfile - app:app"]

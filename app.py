@@ -673,6 +673,21 @@ def manifest():
     return send_file(p, mimetype="application/manifest+json", max_age=3600)
 
 
+@app.get("/service-worker.js")
+def service_worker():
+    p = (ROOT_DIR / "service-worker.js").resolve()
+    if not p.exists():
+        abort(404)
+    resp = send_file(p, mimetype="application/javascript", max_age=0)
+    try:
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+    except Exception:
+        pass
+    return resp
+
+
 @app.get("/icon-apk.png")
 def icon_apk():
     p = (ROOT_DIR / "icon-apk.png").resolve()
