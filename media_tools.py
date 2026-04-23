@@ -799,6 +799,25 @@ def download_images_with_ytdlp(
                     host, path = "", ""
 
                 if "tiktok.com" in host and "/photo/" in path:
+                    debug = (os.environ.get("MEDIA_DOWNLOADER_DEBUG_TIKTOK_PHOTO", "1") or "").strip().lower() not in (
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    )
+                    def _dbg(msg: str) -> None:
+                        if not debug:
+                            return
+                        try:
+                            print(f"[TIKTOK-PHOTO] {msg}", flush=True)
+                        except Exception:
+                            pass
+
+                    if url != _normalize_url(raw_url):
+                        _dbg(f"Normalizado/resuelto: raw={raw_url} effective={url}")
+                    else:
+                        _dbg(f"Procesando: {url}")
+
                     candidates_from_selection = False
                     if selected_image_urls is not None:
                         chosen = [
@@ -819,8 +838,10 @@ def download_images_with_ytdlp(
                         candidates, uploader_name, title_name = _tiktok_photo_candidates_playwright(
                             url, timeout=25, cookies_path=cookies_path
                         )
+                        _dbg(f"Playwright candidates={len(candidates)}")
                         if not candidates:
                             candidates, uploader_name, title_name = _tiktok_photo_candidates(url, timeout=18)
+                            _dbg(f"HTML/JSON candidates={len(candidates)}")
                     if selected_image_urls is not None and not candidates_from_selection:
                         sel = {str(u).strip() for u in (selected_image_urls or []) if str(u).strip()}
                         sel_keys = {_url_key_for_selection(u) for u in sel if u}
@@ -834,11 +855,13 @@ def download_images_with_ytdlp(
                         video_url = _tiktok_video_url_from_photo_url(url)
                         info2 = None
                         if video_url:
+                            _dbg(f"Fallback /photo/->/video/: {video_url}")
                             try:
                                 info2 = ydl.extract_info(video_url, download=False)
                             except Exception:
                                 info2 = None
                         candidates2 = _collect_image_candidates(info2) if isinstance(info2, dict) else []
+                        _dbg(f"Fallback yt-dlp(video) image_candidates={len(candidates2)}")
                         if selected_image_urls is not None and candidates2:
                             sel = {str(u).strip() for u in (selected_image_urls or []) if str(u).strip()}
                             sel_keys = {_url_key_for_selection(u) for u in sel if u}
@@ -855,6 +878,7 @@ def download_images_with_ytdlp(
                                     "Se detectó un TikTok de imágenes, pero no se pudieron obtener las imágenes descargables en este entorno.",
                                 )
                             )
+                            _dbg("Sin imágenes reales: cae al mensaje de entorno (preview fallback en UI).")
                             continue
                         candidates, uploader_name, title_name = candidates2, (uploader_name or "tiktok"), (title_name or "tiktok_photo")
 
@@ -883,6 +907,7 @@ def download_images_with_ytdlp(
                         suffix = f"_{idx:02d}" if len(candidates) > 1 else ""
                         file_name = f"{title_base}{suffix}.{ext}"
                         planned.append((iu, (target_dir / file_name).resolve()))
+                    _dbg(f"Plan de descarga: {len(planned)} archivos")
 
                     wrote_any = False
                     try:
@@ -898,6 +923,7 @@ def download_images_with_ytdlp(
                             if cookies_path and cookies_path.exists() and cookies_path.is_file():
                                 try:
                                     cookies: List[Dict[str, Any]] = []
+                                    tiktok_cookie_lines = 0
                                     for line in cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                                         t = (line or "").strip()
                                         if not t or t.startswith("#"):
@@ -909,6 +935,7 @@ def download_images_with_ytdlp(
                                         domain = (domain or "").strip()
                                         if "tiktok.com" not in domain.lower():
                                             continue
+                                        tiktok_cookie_lines += 1
                                         path0 = (path0 or "/").strip() or "/"
                                         secure_bool = str(secure or "").strip().upper() == "TRUE"
                                         try:
@@ -927,9 +954,12 @@ def download_images_with_ytdlp(
                                         cookies.append(ck)
                                     if cookies:
                                         context.add_cookies(cookies)
+                                    _dbg(f"Cookies Playwright(download): tiktok_lines={tiktok_cookie_lines} added={len(cookies)}")
                                 except Exception:
+                                    _dbg("Cookies Playwright(download): fallo al cargar/aplicar cookies (silenciado).")
                                     pass
 
+                            _dbg(f"Descarga Playwright: intentando {len(planned)} imágenes")
                             for iu, dest in planned:
                                 try:
                                     resp = context.request.get(
@@ -942,10 +972,12 @@ def download_images_with_ytdlp(
                                     )
                                     if not resp.ok:
                                         fails.append((iu, f"HTTP {resp.status}"))
+                                        _dbg(f"PW GET fail: {resp.status} url={iu}")
                                         continue
                                     body = resp.body()
                                     if not body:
                                         fails.append((iu, "Contenido vacío."))
+                                        _dbg(f"PW GET vacío: url={iu}")
                                         continue
                                     dest.parent.mkdir(parents=True, exist_ok=True)
                                     with open(dest, "wb") as fh:
@@ -956,6 +988,7 @@ def download_images_with_ytdlp(
                                     time.sleep(float(sleep_between))
                                 except Exception as e:
                                     fails.append((iu, f"No se pudo descargar la imagen: {type(e).__name__}"))
+                                    _dbg(f"PW GET excepción: {type(e).__name__} url={iu}")
                             try:
                                 context.close()
                             except Exception:
@@ -966,6 +999,7 @@ def download_images_with_ytdlp(
                                 pass
                     except Exception:
                         wrote_any = False
+                        _dbg("Descarga Playwright: falló inicialización/ejecución (silenciado), pasa a urllib fallback.")
 
                     if not wrote_any:
                         for iu, dest in planned:
@@ -1316,6 +1350,21 @@ def _tiktok_photo_candidates_playwright(
     except Exception:
         return [], None, None
 
+    debug = (os.environ.get("MEDIA_DOWNLOADER_DEBUG_TIKTOK_PHOTO", "1") or "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+    def _dbg(msg: str) -> None:
+        if not debug:
+            return
+        try:
+            print(f"[TIKTOK-PHOTO-PW] {msg}", flush=True)
+        except Exception:
+            pass
+
     def _is_img_url(u: str) -> bool:
         s = str(u or "").strip()
         if not s:
@@ -1426,6 +1475,7 @@ def _tiktok_photo_candidates_playwright(
     seen_keys: set[str] = set()
     photomode: List[str] = []
     other: List[str] = []
+    stats: Dict[str, int] = {"net": 0, "dom": 0, "blob": 0, "next": 0}
 
     def _add(u: str, *, w: Optional[int] = None, h: Optional[int] = None, from_network: bool = False) -> None:
         s0 = _clean_url(u)
@@ -1450,8 +1500,10 @@ def _tiktok_photo_candidates_playwright(
 
         if score >= 80:
             photomode.append(s)
-        elif not from_network:
+        else:
             other.append(s)
+        if from_network:
+            stats["net"] = int(stats.get("net") or 0) + 1
 
     try:
         with sync_playwright() as p:
@@ -1462,9 +1514,13 @@ def _tiktok_photo_candidates_playwright(
                 viewport={"width": 1200, "height": 900},
             )
 
+            usable, size = _cookies_file_usable(cookies_path)
+            _dbg(f"Entrando. url={url} timeout={timeout}s cookies_usable={usable} cookie_size={size if size is not None else 'NA'}")
+
             if cookies_path and cookies_path.exists() and cookies_path.is_file():
                 try:
                     cookies: List[Dict[str, Any]] = []
+                    tiktok_cookie_lines = 0
                     for line in cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                         t = (line or "").strip()
                         if not t or t.startswith("#"):
@@ -1476,6 +1532,7 @@ def _tiktok_photo_candidates_playwright(
                         domain = (domain or "").strip()
                         if "tiktok.com" not in domain.lower():
                             continue
+                        tiktok_cookie_lines += 1
                         path = (path or "/").strip() or "/"
                         secure_bool = str(secure or "").strip().upper() == "TRUE"
                         try:
@@ -1494,7 +1551,9 @@ def _tiktok_photo_candidates_playwright(
                         cookies.append(ck)
                     if cookies:
                         context.add_cookies(cookies)
+                    _dbg(f"Cookies Playwright: tiktok_lines={tiktok_cookie_lines} added={len(cookies)}")
                 except Exception:
+                    _dbg("Cookies Playwright: fallo al cargar/aplicar cookies (silenciado).")
                     pass
 
             page = context.new_page()
@@ -1502,19 +1561,26 @@ def _tiktok_photo_candidates_playwright(
             def on_response(resp) -> None:
                 try:
                     req = resp.request
-                    if req and req.resource_type == "image":
-                        h = resp.headers or {}
-                        ct = str(h.get("content-type") or "").lower()
-                        if ct and not ct.startswith("image/"):
-                            return None
-                        cl = str(h.get("content-length") or "").strip()
-                        if cl.isdigit():
-                            try:
-                                if int(cl) < 12000:
-                                    return None
-                            except Exception:
-                                pass
-                        _add(resp.url, from_network=True)
+                    h = resp.headers or {}
+                    ct = str(h.get("content-type") or "").lower()
+                    u2 = str(resp.url or "")
+                    is_img = False
+                    if req and str(getattr(req, "resource_type", "") or "") == "image":
+                        is_img = True
+                    if ct.startswith("image/"):
+                        is_img = True
+                    if "tiktokcdn" in u2.lower() and _is_img_url(u2):
+                        is_img = True
+                    if not is_img:
+                        return None
+                    cl = str(h.get("content-length") or "").strip()
+                    if cl.isdigit():
+                        try:
+                            if int(cl) < 12000:
+                                return None
+                        except Exception:
+                            pass
+                    _add(u2, from_network=True)
                 except Exception:
                     return None
 
@@ -1523,6 +1589,10 @@ def _tiktok_photo_candidates_playwright(
             page.goto(url, wait_until="domcontentloaded", timeout=max(1, int(timeout)) * 1000)
             try:
                 page.wait_for_load_state("networkidle", timeout=max(1, int(timeout)) * 1000)
+            except Exception:
+                pass
+            try:
+                _dbg(f"Página cargada. final_url={page.url}")
             except Exception:
                 pass
 
@@ -1543,6 +1613,7 @@ def _tiktok_photo_candidates_playwright(
                             _add(str(it.get("src") or ""), w=it.get("w"), h=it.get("h"))
                         else:
                             _add(str(it))
+                stats["dom"] = int(stats.get("dom") or 0) + (len(imgs) if isinstance(imgs, list) else 0)
             except Exception:
                 pass
 
@@ -1552,6 +1623,7 @@ def _tiktok_photo_candidates_playwright(
                         "#__UNIVERSAL_DATA_FOR_REHYDRATION__", "el => el.textContent || ''"
                     )
                     if isinstance(blob1, str) and blob1.strip():
+                        stats["blob"] = int(stats.get("blob") or 0) + 1
                         for u in _from_blob(blob1):
                             _add(u)
                 except Exception:
@@ -1559,12 +1631,14 @@ def _tiktok_photo_candidates_playwright(
                 try:
                     blob2 = page.eval_on_selector("#SIGI_STATE", "el => el.textContent || ''")
                     if isinstance(blob2, str) and blob2.strip():
+                        stats["blob"] = int(stats.get("blob") or 0) + 1
                         for u in _from_blob(blob2):
                             _add(u)
                 except Exception:
                     pass
 
             extract_blobs()
+            _dbg(f"Post-carga: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} net_hits={stats.get('net')} blob_hits={stats.get('blob')}")
 
             for _ in range(16):
                 btn = None
@@ -1575,10 +1649,12 @@ def _tiktok_photo_candidates_playwright(
                 except Exception:
                     btn = None
                 if not btn:
+                    _dbg("Carrusel: no se encontró botón Next.")
                     break
                 try:
                     btn.click(timeout=1000)
                     page.wait_for_timeout(250)
+                    stats["next"] = int(stats.get("next") or 0) + 1
                     try:
                         imgs2 = page.evaluate(
                             "() => Array.from(document.images).map(i => ({src:(i.currentSrc||i.src||i.getAttribute('src')||''), w:(i.naturalWidth||0), h:(i.naturalHeight||0)})).filter(x => x.src)"
@@ -1592,7 +1668,9 @@ def _tiktok_photo_candidates_playwright(
                     except Exception:
                         pass
                     extract_blobs()
+                    _dbg(f"Carrusel step={stats.get('next')}: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} net_hits={stats.get('net')}")
                 except Exception:
+                    _dbg("Carrusel: click Next falló.")
                     break
 
             try:
@@ -1607,6 +1685,7 @@ def _tiktok_photo_candidates_playwright(
         return [], None, None
 
     final_urls = photomode if photomode else other
+    _dbg(f"Final: elegido={'photomode' if photomode else 'other'} count={len(final_urls)} total_seen={len(seen_keys)}")
     candidates: List[Dict[str, str]] = []
     for u in final_urls:
         ext = _guess_ext_from_url(u, "jpg").lower()
