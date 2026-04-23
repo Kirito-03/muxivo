@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Entorno virtual
+env/
+
+# Descargas y cache
+downloads/
+preview_cache/
+served_files/
+
+# Logs
+*.log
+
+# Docker
+*.env
+
+# Cookies (MUY IMPORTANTE)
+*.txt
+www.instagram.com_cookies.txt
+www.tiktok.com_cookies.txt

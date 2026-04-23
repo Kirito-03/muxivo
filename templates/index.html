@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="icon" type="image/png" href="/icon-apk.png" />
+    <link rel="apple-touch-icon" href="/icon-apk.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=7" />
+    <title>Muxivo</title>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+
+        <div class="field">
+          <div class="url-box">
+            <div id="urlLabel" class="url-label">PASTE MEDIA URL</div>
+            <textarea id="urlInput" class="url-input" rows="3" placeholder=""></textarea>
+            <div id="detectArea" class="url-detect-area" hidden>
+              <div id="detectLoader" class="url-detect-line" hidden>
+                <span>ANALIZANDO ENLACE</span><span id="detectDots" class="url-dots"></span>
+              </div>
+              <div id="detectInfo" class="url-detect-line" hidden>
+                <span id="detectIcon" class="url-detect-icon" aria-hidden="true"></span>
+                <span id="detectPlatform" class="url-detect-platform"></span>
+                <span class="url-detect-sep">•</span>
+                <span id="detectType" class="url-detect-type"></span>
+              </div>
+              <div id="detectError" class="url-detect-line url-detect-error" hidden></div>
+            </div>
+            <div class="url-actions">
+              <button id="clearBtn" class="ghost url-clear" type="button" hidden>CLEAR</button>
+              <button id="pasteBtn" class="ghost url-paste" type="button">PASTE</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field" id="imagePicker" hidden>
+          <div class="field-label">IMAGES</div>
+          <div class="pick-box">
+            <div class="pick-actions">
+              <button id="pickAllBtn" class="ghost pick-action" type="button">ALL</button>
+              <button id="pickNoneBtn" class="ghost pick-action" type="button">NONE</button>
+            </div>
+            <ul id="imageCandidateList" class="pick-list"></ul>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">MEDIA TYPE</div>
+          <div class="segmented" role="tablist" aria-label="Media Type">
+            <button class="seg-btn is-active" data-kind="audio" type="button" role="tab" aria-selected="true">AUDIO</button>
+            <button class="seg-btn" data-kind="video" type="button" role="tab" aria-selected="false">VIDEO</button>
+            <button class="seg-btn" data-kind="image" type="button" role="tab" aria-selected="false">IMAGE</button>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <div class="field-label">FORMAT</div>
+            <div class="select-wrap">
+              <select id="formatSelect" class="select"></select>
+              <span class="chev" aria-hidden="true"></span>
+            </div>
+          </div>
+          <div class="field">
+            <div class="field-label">QUALITY</div>
+            <div class="select-wrap">
+              <select id="qualitySelect" class="select"></select>
+              <span class="chev" aria-hidden="true"></span>
+            </div>
+          </div>
+        </div>
+
+        <button id="downloadBtn" class="primary" type="button">
+          <span id="downloadLabel">DESCARGAR</span>
+        </button>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+
+        <details class="accordion" id="archiveAcc">
+          <summary class="acc-summary">
+            <span>ARCHIVE</span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </summary>
+          <div class="acc-body">
+            <div id="archiveEmpty" class="archive-empty">No downloads yet</div>
+            <div id="zipRow" class="zip-row"></div>
+            <ul id="archiveList" class="file-list"></ul>
+            <div id="failures" class="failures"></div>
+          </div>
+        </details>
+
+        <details class="accordion" id="playbackAcc">
+          <summary class="acc-summary">
+            <span>PLAYBACK</span>
+            <span class="acc-chev" aria-hidden="true"></span>
+          </summary>
+          <div class="acc-body">
+            <div class="playback-top" id="playbackControls" hidden>
+              <div class="select-wrap grow">
+                <select id="playbackSelect" class="select" disabled></select>
+                <span class="chev" aria-hidden="true"></span>
+              </div>
+              <a id="playbackDownload" class="ghost" href="#" download hidden>DESCARGAR</a>
+            </div>
+            <div id="playback" class="playback">
+              <svg class="play-icon-default" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <polygon points="6,3 20,12 6,21" fill="rgba(255,255,255,0.18)"/>
+              </svg>
+            </div>
+          </div>
+        </details>
+
+        <noscript>
+          <div class="status is-error">Activa JavaScript para usar la interfaz.</div>
+        </noscript>
+      </section>
+    </main>
+
+    <script src="/static/js/app.js?v=12" defer></script>
+  </body>
+</html>
