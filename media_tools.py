@@ -2388,6 +2388,328 @@ def probe_image_candidates(
     return [c for c in out if c.get("url")]
 
 
+def _is_tiktok_video_url(url: str) -> bool:
+    try:
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return False
+    if "tiktok.com" not in host:
+        return False
+    if "/photo/" in path:
+        return False
+    return "/video/" in path or bool(re.search(r"/@[^/]+/video/\d+", path))
+
+
+def _tiktok_parse_user_and_id(url: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        p = urlparse(url)
+        path = p.path or ""
+    except Exception:
+        return None, None
+    m = re.search(r"/@([^/]+)/video/(\d+)", path)
+    if m:
+        return (m.group(1) or None), (m.group(2) or None)
+    m2 = re.search(r"/video/(\d+)", path)
+    if m2:
+        return None, (m2.group(1) or None)
+    return None, None
+
+
+def _tiktok_score_video_url(u: str) -> int:
+    s = str(u or "").strip()
+    if not s:
+        return -10_000
+    low = s.lower()
+    score = 0
+    if "playwm" in low or "watermark" in low:
+        score -= 500
+    if "mime_type=video_mp4" in low or "mime_type=video%2fmp4" in low:
+        score += 20
+    if ".mp4" in low:
+        score += 10
+    if "tiktokcdn.com" in low:
+        score += 5
+    if "bytevc1" in low or "hvc1" in low or "avc1" in low:
+        score += 2
+    return score
+
+
+def _tiktok_pick_best_video_url(candidates: List[str]) -> Tuple[Optional[str], bool]:
+    uniq: List[str] = []
+    seen = set()
+    for u in candidates:
+        s = str(u or "").strip()
+        if not s:
+            continue
+        if not s.startswith(("http://", "https://")):
+            continue
+        s = s.replace("\\u002F", "/").replace("\\/", "/").replace("&amp;", "&")
+        k = s.split("#", 1)[0].strip()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(s)
+    if not uniq:
+        return None, False
+    uniq.sort(key=_tiktok_score_video_url, reverse=True)
+    best = uniq[0]
+    wm = ("playwm" in best.lower()) or ("watermark" in best.lower())
+    return best, wm
+
+
+def _tiktok_discover_video_url_playwright(
+    url: str,
+    cookies_path: Optional[Path],
+    timeout: int = 30,
+) -> Tuple[Optional[str], bool, str]:
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except Exception:
+        return None, False, "Playwright no está disponible en este entorno."
+
+    eff = url
+    try:
+        resolved, _ = resolve_tiktok_url_for_detection(url)
+        if resolved:
+            eff = resolved
+    except Exception:
+        eff = url
+
+    candidates: List[str] = []
+
+    def _add_candidate(u: Optional[str]) -> None:
+        s = str(u or "").strip()
+        if not s:
+            return
+        if not s.startswith(("http://", "https://")):
+            return
+        if ".mp4" not in s.lower() and "mime_type=video" not in s.lower():
+            return
+        candidates.append(s)
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+                locale="en-US",
+                viewport={"width": 1200, "height": 900},
+            )
+
+            if cookies_path and cookies_path.exists() and cookies_path.is_file():
+                try:
+                    cookies: List[Dict[str, Any]] = []
+                    for line in cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        t = (line or "").strip()
+                        if not t or t.startswith("#"):
+                            continue
+                        parts = t.split("\t")
+                        if len(parts) < 7:
+                            continue
+                        domain, _flag, path0, secure, expires, name, value = parts[:7]
+                        domain = (domain or "").strip()
+                        if "tiktok.com" not in domain.lower():
+                            continue
+                        path0 = (path0 or "/").strip() or "/"
+                        secure_bool = str(secure or "").strip().upper() == "TRUE"
+                        try:
+                            exp = int(float(expires))
+                        except Exception:
+                            exp = -1
+                        ck: Dict[str, Any] = {
+                            "name": str(name or ""),
+                            "value": str(value or ""),
+                            "domain": domain,
+                            "path": path0,
+                            "secure": secure_bool,
+                        }
+                        if exp > 0:
+                            ck["expires"] = exp
+                        cookies.append(ck)
+                    if cookies:
+                        context.add_cookies(cookies)
+                except Exception:
+                    pass
+
+            page = context.new_page()
+
+            def on_response(resp: Any) -> None:
+                try:
+                    u2 = str(resp.url or "").strip()
+                except Exception:
+                    u2 = ""
+                if not u2:
+                    return
+                try:
+                    hdrs = resp.headers or {}
+                    ctype = str(hdrs.get("content-type") or "").lower()
+                except Exception:
+                    ctype = ""
+                if "video" in ctype or ".mp4" in u2.lower():
+                    candidates.append(u2)
+
+            page.on("response", on_response)
+
+            try:
+                page.goto(eff, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+            except Exception:
+                pass
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+
+            try:
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
+
+            try:
+                for sel in [
+                    'meta[property="og:video"]',
+                    'meta[property="og:video:url"]',
+                    'meta[name="twitter:player:stream"]',
+                    'meta[property="twitter:player:stream"]',
+                ]:
+                    el = page.query_selector(sel)
+                    if el:
+                        _add_candidate(el.get_attribute("content"))
+            except Exception:
+                pass
+
+            try:
+                vid = page.query_selector("video")
+                if vid:
+                    _add_candidate(vid.get_attribute("src"))
+                    try:
+                        cur = page.evaluate("(el) => el.currentSrc || ''", vid)
+                        _add_candidate(cur)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+    except Exception as e:
+        return None, False, f"Playwright falló: {type(e).__name__}"
+
+    best, wm = _tiktok_pick_best_video_url(candidates)
+    if not best:
+        return None, False, "No se detectó ningún stream mp4 por Playwright."
+    return best, wm, ""
+
+
+def _download_binary_to_path(
+    file_url: str,
+    dest: Path,
+    referer: str,
+    user_agent: str,
+    cookies_path: Optional[Path],
+    proxy_url: Optional[str],
+    timeout: int = 60,
+) -> Tuple[bool, str]:
+    try:
+        headers = {
+            "User-Agent": user_agent,
+            "Referer": referer,
+            "Accept": "video/*,*/*;q=0.8",
+        }
+        ck = _cookie_header_for_domain(cookies_path, "tiktok.com")
+        if ck:
+            headers["Cookie"] = ck
+
+        opener_handlers: List[Any] = [urllib.request.HTTPSHandler(context=ssl.create_default_context())]
+        effective_proxy = proxy_url or _env_proxy()
+        if isinstance(effective_proxy, str) and effective_proxy.strip():
+            opener_handlers.append(
+                urllib.request.ProxyHandler({"http": effective_proxy.strip(), "https": effective_proxy.strip()})
+            )
+        opener = urllib.request.build_opener(*opener_handlers)
+
+        req = urllib.request.Request(file_url, headers=headers, method="GET")
+        with opener.open(req, timeout=timeout) as resp:
+            ctype = str(getattr(resp, "headers", {}).get("Content-Type") or "").lower()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(dest, "wb") as fh:
+                head = resp.read(16384)
+                if not head:
+                    return False, "Contenido vacío."
+                if ("video" not in ctype) and (b"ftyp" not in head[:4096]):
+                    return False, "La respuesta no parece ser un video."
+                fh.write(head)
+                shutil.copyfileobj(resp, fh)
+                fh.flush()
+        try:
+            if dest.exists() and dest.stat().st_size > 1024:
+                return True, ""
+        except Exception:
+            pass
+        return False, "Archivo descargado inválido."
+    except Exception as e:
+        return False, f"{type(e).__name__}"
+
+
+def _try_tiktok_video_playwright_first(
+    url: str,
+    out_dir: Path,
+    per_channel_folders: bool,
+    cookies_path: Optional[Path],
+    proxy_url: Optional[str],
+) -> Optional[Path]:
+    enable = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PW_VIDEO", "1") or "").strip().lower()
+    if enable in ("0", "false", "no", "off"):
+        return None
+    if not _is_tiktok_video_url(url):
+        return None
+
+    user, vid = _tiktok_parse_user_and_id(url)
+    uploader = _slugify(user or "tiktok", maxlen=50)
+    target_dir = out_dir / uploader if per_channel_folders else out_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    base = f"tiktok_{vid}" if vid else "tiktok_video"
+    dest = (target_dir / f"{base}.mp4").resolve()
+    if dest.exists():
+        dest = (target_dir / f"{base}_{os.urandom(3).hex()}.mp4").resolve()
+
+    print(f"[TIKTOK-PW] Intentando extraer video por Playwright: {url}", flush=True)
+    best_url, wm, reason = _tiktok_discover_video_url_playwright(url, cookies_path=cookies_path)
+    if not best_url:
+        print(f"[TIKTOK-PW] No se pudo detectar mp4. Fallback yt-dlp. Motivo: {reason}", flush=True)
+        return None
+
+    print(f"[TIKTOK-PW] Candidato seleccionado ({'WM' if wm else 'NO-WM'}): {best_url}", flush=True)
+    ok, err = _download_binary_to_path(
+        best_url,
+        dest=dest,
+        referer=url,
+        user_agent=(os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+        cookies_path=cookies_path,
+        proxy_url=proxy_url,
+        timeout=90,
+    )
+    if not ok:
+        try:
+            if dest.exists():
+                dest.unlink()
+        except Exception:
+            pass
+        print(f"[TIKTOK-PW] Descarga falló. Fallback yt-dlp. Error: {err}", flush=True)
+        return None
+
+    print(f"[TIKTOK-PW] Descarga OK: {dest.name}", flush=True)
+    return dest.resolve()
+
+
 # -------------------- download com yt-dlp --------------------
 def download_with_ytdlp(
     urls: List[str],
@@ -2602,6 +2924,23 @@ def download_with_ytdlp(
                         ydl.params["playliststart"] = int(pl_start)
                     if pl_end is not None:
                         ydl.params["playlistend"] = int(pl_end)
+
+                    try:
+                        if kind == "video" and _is_tiktok_video_url(url):
+                            pw_path = _try_tiktok_video_playwright_first(
+                                url,
+                                out_dir=out_dir,
+                                per_channel_folders=per_channel_folders,
+                                cookies_path=cookies_path,
+                                proxy_url=str(ydl.params.get("proxy") or "") or proxy_url,
+                            )
+                            if pw_path and pw_path.exists():
+                                ydl.params.pop("playliststart", None)
+                                ydl.params.pop("playlistend", None)
+                                time.sleep(float(sleep_between))
+                                continue
+                    except Exception as e:
+                        print(f"[TIKTOK-PW] Error inesperado, usando fallback yt-dlp: {type(e).__name__}", flush=True)
 
                     err = _run_download(ydl, url)
                     if err:
