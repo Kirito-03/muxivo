@@ -1632,6 +1632,69 @@ def _tiktok_photo_candidates_playwright(
 
         return out, chosen_id
 
+    def _extract_images_from_universal_data(universal: Dict[str, Any]) -> Tuple[List[str], bool]:
+        try:
+            default_scope = universal.get("__DEFAULT_SCOPE__")
+        except Exception:
+            default_scope = None
+        if not isinstance(default_scope, dict) or not default_scope:
+            return [], False
+
+        video_detail = default_scope.get("webapp.video-detail")
+        if not isinstance(video_detail, dict):
+            for k, v in default_scope.items():
+                if isinstance(k, str) and k.startswith("webapp.video-detail") and isinstance(v, dict):
+                    video_detail = v
+                    break
+        if not isinstance(video_detail, dict) or not video_detail:
+            return [], False
+
+        item_info = video_detail.get("itemInfo")
+        if not isinstance(item_info, dict):
+            return [], False
+
+        item_struct = item_info.get("itemStruct")
+        if not isinstance(item_struct, dict) or not item_struct:
+            return [], False
+
+        image_post = item_struct.get("imagePost")
+        if not isinstance(image_post, dict) or not image_post:
+            return [], True
+
+        imgs = image_post.get("images") or image_post.get("imageList")
+        if not isinstance(imgs, list) or not imgs:
+            return [], True
+
+        out: List[str] = []
+        for im in imgs:
+            best: Optional[str] = None
+            if isinstance(im, dict):
+                best = _pick_best_from_url_list(im.get("urlList"))
+                if not best:
+                    img_url = im.get("imageURL")
+                    if isinstance(img_url, dict):
+                        best = _pick_best_from_url_list(img_url.get("urlList"))
+                if not best:
+                    disp = im.get("displayImage")
+                    if isinstance(disp, dict):
+                        best = _pick_best_from_url_list(disp.get("urlList"))
+                if not best:
+                    best = _pick_best_from_url_list(im.get("urls"))
+                if not best:
+                    s = _normalize_tiktok_photo_image_url(_clean_url(str(im.get("url") or "")))
+                    if _is_img_url(s) and _score_img_url(s) >= 0:
+                        best = s
+            elif isinstance(im, list):
+                best = _pick_best_from_url_list(im)
+            elif isinstance(im, str):
+                s = _normalize_tiktok_photo_image_url(_clean_url(im))
+                if _is_img_url(s) and _score_img_url(s) >= 0:
+                    best = s
+            if best:
+                out.append(best)
+
+        return out, True
+
     seen_keys: set[str] = set()
     photomode: List[str] = []
     other: List[str] = []
@@ -1918,6 +1981,30 @@ def _tiktok_photo_candidates_playwright(
                     pass
 
             def extract_window_state() -> None:
+                uni_obj: Optional[Dict[str, Any]] = None
+                try:
+                    uni_raw = page.evaluate(
+                        "() => { try { return JSON.stringify(window.__UNIVERSAL_DATA_FOR_REHYDRATION__ || null) } catch(e) { return null } }"
+                    )
+                    if isinstance(uni_raw, str) and uni_raw and uni_raw != "null":
+                        try:
+                            uni_obj = json.loads(uni_raw)
+                            _dbg(f"UNIVERSAL_DATA encontrado. json_len={len(uni_raw)}")
+                        except Exception:
+                            uni_obj = None
+                            _dbg("UNIVERSAL_DATA encontrado, pero no se pudo parsear JSON.stringify.")
+                except Exception:
+                    _dbg("UNIVERSAL_DATA: error al leer.")
+
+                if isinstance(uni_obj, dict) and uni_obj:
+                    urls_u, item_struct_found = _extract_images_from_universal_data(uni_obj)
+                    stats["json"] = int(stats.get("json") or 0) + 1
+                    _dbg(f"UNIVERSAL_DATA itemStruct encontrado={bool(item_struct_found)} images_from_universal={len(urls_u)}")
+                    for u in urls_u:
+                        _add(u)
+                    if urls_u:
+                        return
+
                 try:
                     sigi = page.evaluate(
                         "() => { try { return (window.__SIGI_STATE__ && typeof window.__SIGI_STATE__ === 'object') ? window.__SIGI_STATE__ : null } catch(e) { return null } }"
@@ -1939,19 +2026,6 @@ def _tiktok_photo_candidates_playwright(
                             _add(u)
                 except Exception:
                     _dbg("JSON window.__SIGI_STATE__: error")
-
-                try:
-                    uni = page.evaluate(
-                        "() => { try { return (window.__UNIVERSAL_DATA_FOR_REHYDRATION__ && typeof window.__UNIVERSAL_DATA_FOR_REHYDRATION__ === 'object') ? window.__UNIVERSAL_DATA_FOR_REHYDRATION__ : null } catch(e) { return null } }"
-                    )
-                    if isinstance(uni, dict) and uni:
-                        urls = _from_state_obj(uni)
-                        stats["json"] = int(stats.get("json") or 0) + 1
-                        _dbg(f"JSON window.__UNIVERSAL_DATA_FOR_REHYDRATION__: urls={len(urls)}")
-                        for u in urls:
-                            _add(u)
-                except Exception:
-                    _dbg("JSON window.__UNIVERSAL_DATA_FOR_REHYDRATION__: error")
 
             extract_blobs()
             extract_window_state()
