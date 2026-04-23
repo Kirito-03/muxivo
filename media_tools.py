@@ -1371,7 +1371,16 @@ def _tiktok_photo_candidates_playwright(
             return False
         if not (s.startswith("http://") or s.startswith("https://")):
             return False
-        return bool(re.search(r"\.(jpe?g|png|webp)(\?|#|$)", s, re.IGNORECASE))
+        low = s.lower()
+        if re.search(r"\.(jpe?g|png|webp)(\?|#|$)", s, re.IGNORECASE):
+            return True
+        if "tiktokcdn.com" not in low:
+            return False
+        if "tplv-photomode-image" in low or "photomode" in low:
+            return True
+        if "mime_type=image" in low or "mime_type=image%2f" in low:
+            return True
+        return False
 
     def _clean_url(u: str) -> str:
         s = str(u or "").strip()
@@ -1423,6 +1432,8 @@ def _tiktok_photo_candidates_playwright(
             score += 40
         if "tiktokcdn" in low:
             score += 10
+        if "mime_type=image" in low or "mime_type=image%2f" in low:
+            score += 5
         if low.endswith(".jpeg") or low.endswith(".jpg"):
             score += 2
         return score
@@ -1431,7 +1442,8 @@ def _tiktok_photo_candidates_playwright(
         try:
             data = json.loads(blob_text)
         except Exception:
-            return []
+            candidates = re.findall(r"https://[^\s\"']+tiktokcdn\.com[^\s\"']+", str(blob_text or ""), re.IGNORECASE)
+            return [u for u in candidates if isinstance(u, str) and _is_img_url(u)]
 
         out_urls: List[str] = []
 
@@ -1470,7 +1482,11 @@ def _tiktok_photo_candidates_playwright(
                     walk(v)
 
         walk(data)
-        return [u for u in out_urls if isinstance(u, str) and _is_img_url(u)]
+        filtered = [u for u in out_urls if isinstance(u, str) and _is_img_url(u)]
+        if filtered:
+            return filtered
+        candidates = re.findall(r"https://[^\s\"']+tiktokcdn\.com[^\s\"']+", str(blob_text or ""), re.IGNORECASE)
+        return [u for u in candidates if isinstance(u, str) and _is_img_url(u)]
 
     seen_keys: set[str] = set()
     photomode: List[str] = []
@@ -1558,6 +1574,128 @@ def _tiktok_photo_candidates_playwright(
 
             page = context.new_page()
 
+            def _scan_dom(tag: str) -> None:
+                try:
+                    items = page.evaluate(
+                        """() => {
+                          const out = []
+                          const imgs = Array.from(document.images || [])
+                          for (const i of imgs) {
+                            const src = (i.currentSrc || i.src || i.getAttribute('src') || '').trim()
+                            if (!src) continue
+                            const w = (i.naturalWidth || 0)
+                            const h = (i.naturalHeight || 0)
+                            out.push({src, w, h})
+                          }
+                          return out
+                        }"""
+                    )
+                    cnt = 0
+                    if isinstance(items, list):
+                        for it in items:
+                            if isinstance(it, dict):
+                                _add(str(it.get("src") or ""), w=it.get("w"), h=it.get("h"))
+                                cnt += 1
+                            else:
+                                _add(str(it))
+                                cnt += 1
+                    stats["dom"] = int(stats.get("dom") or 0) + cnt
+                    _dbg(f"DOM scan({tag}): images={cnt} photomode={len(photomode)} other={len(other)} seen={len(seen_keys)}")
+                except Exception:
+                    _dbg(f"DOM scan({tag}): error")
+
+            def _scan_visible_big(tag: str) -> None:
+                try:
+                    items = page.evaluate(
+                        """() => {
+                          const out = []
+                          const vw = window.innerWidth || 0
+                          const vh = window.innerHeight || 0
+                          const els = Array.from(document.images || [])
+                          for (const i of els) {
+                            const src = (i.currentSrc || i.src || i.getAttribute('src') || '').trim()
+                            if (!src) continue
+                            const r = i.getBoundingClientRect()
+                            const w = Math.round(r.width || 0)
+                            const h = Math.round(r.height || 0)
+                            const vis = (r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw)
+                            if (!vis) continue
+                            if (w < 220 || h < 220) continue
+                            out.push({src, w, h})
+                          }
+                          return out
+                        }"""
+                    )
+                    cnt = 0
+                    if isinstance(items, list):
+                        for it in items:
+                            if isinstance(it, dict):
+                                _add(str(it.get("src") or ""), w=it.get("w"), h=it.get("h"))
+                                cnt += 1
+                            else:
+                                _add(str(it))
+                                cnt += 1
+                    _dbg(f"Visible scan({tag}): big_images={cnt} photomode={len(photomode)} other={len(other)} seen={len(seen_keys)}")
+                except Exception:
+                    _dbg(f"Visible scan({tag}): error")
+
+            def _scan_scripts_for_urls(tag: str) -> None:
+                try:
+                    urls = page.evaluate(
+                        """() => {
+                          const out = []
+                          const scripts = Array.from(document.scripts || [])
+                          for (const s of scripts) {
+                            const t = (s.textContent || '')
+                            if (!t) continue
+                            if (t.indexOf('tiktokcdn') === -1 && t.indexOf('photomode') === -1 && t.indexOf('imagePost') === -1) continue
+                            out.push(t.slice(0, 200000))
+                          }
+                          return out
+                        }"""
+                    )
+                    blobs = 0
+                    hits = 0
+                    if isinstance(urls, list):
+                        for t in urls:
+                            blobs += 1
+                            if isinstance(t, str) and t:
+                                found = re.findall(r"https://[^\s\"']+tiktokcdn\.com[^\s\"']+", t, re.IGNORECASE)
+                                for u in found:
+                                    _add(str(u))
+                                    hits += 1
+                    _dbg(f"Scripts scan({tag}): script_blobs={blobs} url_hits={hits} photomode={len(photomode)} other={len(other)} seen={len(seen_keys)}")
+                except Exception:
+                    _dbg(f"Scripts scan({tag}): error")
+
+            def _scan_inline_bg(tag: str) -> None:
+                try:
+                    urls = page.evaluate(
+                        """() => {
+                          const out = []
+                          const els = Array.from(document.querySelectorAll('[style*="background"]') || [])
+                          for (const el of els) {
+                            const st = el.getAttribute('style') || ''
+                            if (!st) continue
+                            if (st.indexOf('tiktokcdn') === -1) continue
+                            out.push(st)
+                          }
+                          return out
+                        }"""
+                    )
+                    hits = 0
+                    if isinstance(urls, list):
+                        for st in urls:
+                            if not isinstance(st, str):
+                                continue
+                            found = re.findall(r"https://[^\s\"')]+tiktokcdn\.com[^\s\"')]+", st, re.IGNORECASE)
+                            for u in found:
+                                _add(str(u))
+                                hits += 1
+                    _dbg(f"BG scan({tag}): url_hits={hits} photomode={len(photomode)} other={len(other)} seen={len(seen_keys)}")
+                except Exception:
+                    _dbg(f"BG scan({tag}): error")
+
             def on_response(resp) -> None:
                 try:
                     req = resp.request
@@ -1595,6 +1733,10 @@ def _tiktok_photo_candidates_playwright(
                 _dbg(f"Página cargada. final_url={page.url}")
             except Exception:
                 pass
+            try:
+                page.wait_for_timeout(3500)
+            except Exception:
+                pass
 
             try:
                 og = page.locator('meta[property="og:image"]').first.get_attribute("content")
@@ -1603,19 +1745,9 @@ def _tiktok_photo_candidates_playwright(
             except Exception:
                 pass
 
-            try:
-                imgs = page.evaluate(
-                    "() => Array.from(document.images).map(i => ({src:(i.currentSrc||i.src||i.getAttribute('src')||''), w:(i.naturalWidth||0), h:(i.naturalHeight||0)})).filter(x => x.src)"
-                )
-                if isinstance(imgs, list):
-                    for it in imgs:
-                        if isinstance(it, dict):
-                            _add(str(it.get("src") or ""), w=it.get("w"), h=it.get("h"))
-                        else:
-                            _add(str(it))
-                stats["dom"] = int(stats.get("dom") or 0) + (len(imgs) if isinstance(imgs, list) else 0)
-            except Exception:
-                pass
+            _scan_dom("after-load")
+            _scan_visible_big("after-load")
+            _scan_inline_bg("after-load")
 
             def extract_blobs() -> None:
                 try:
@@ -1624,7 +1756,9 @@ def _tiktok_photo_candidates_playwright(
                     )
                     if isinstance(blob1, str) and blob1.strip():
                         stats["blob"] = int(stats.get("blob") or 0) + 1
-                        for u in _from_blob(blob1):
+                        urls1 = _from_blob(blob1)
+                        _dbg(f"Blob __UNIVERSAL__: urls={len(urls1)}")
+                        for u in urls1:
                             _add(u)
                 except Exception:
                     pass
@@ -1632,42 +1766,84 @@ def _tiktok_photo_candidates_playwright(
                     blob2 = page.eval_on_selector("#SIGI_STATE", "el => el.textContent || ''")
                     if isinstance(blob2, str) and blob2.strip():
                         stats["blob"] = int(stats.get("blob") or 0) + 1
-                        for u in _from_blob(blob2):
+                        urls2 = _from_blob(blob2)
+                        _dbg(f"Blob SIGI_STATE: urls={len(urls2)}")
+                        for u in urls2:
                             _add(u)
                 except Exception:
                     pass
 
             extract_blobs()
             _dbg(f"Post-carga: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} net_hits={stats.get('net')} blob_hits={stats.get('blob')}")
+            _scan_scripts_for_urls("post-blobs")
 
-            for _ in range(16):
+            carousel_selectors = [
+                'button[aria-label*="Next" i]',
+                'button[aria-label*="Siguiente" i]',
+                'button[aria-label*="Suivant" i]',
+                'button[data-e2e*="arrow-right" i]',
+                'button[data-e2e*="right" i]',
+                '[data-e2e*="arrow-right" i] button',
+            ]
+
+            def _try_next_button() -> bool:
+                for sel in carousel_selectors:
+                    try:
+                        btn = page.query_selector(sel)
+                    except Exception:
+                        btn = None
+                    if btn:
+                        _dbg(f"Carrusel: usando selector Next: {sel}")
+                        try:
+                            btn.click(timeout=1500)
+                            return True
+                        except Exception:
+                            _dbg(f"Carrusel: click falló selector={sel}")
+                            continue
+                return False
+
+            for step in range(16):
                 btn = None
                 try:
-                    btn = page.query_selector(
-                        'button[aria-label*="Next" i], button[aria-label*="Siguiente" i], button[aria-label*="Suivant" i], button[data-e2e*="arrow-right" i]'
-                    )
-                except Exception:
-                    btn = None
-                if not btn:
-                    _dbg("Carrusel: no se encontró botón Next.")
-                    break
-                try:
-                    btn.click(timeout=1000)
-                    page.wait_for_timeout(250)
-                    stats["next"] = int(stats.get("next") or 0) + 1
+                    advanced = _try_next_button()
+                    if not advanced:
+                        if step == 0:
+                            _dbg("Carrusel: no se encontró botón Next; probando ArrowRight/scroll/click.")
+                        try:
+                            page.keyboard.press("ArrowRight")
+                            advanced = True
+                        except Exception:
+                            advanced = False
                     try:
-                        imgs2 = page.evaluate(
-                            "() => Array.from(document.images).map(i => ({src:(i.currentSrc||i.src||i.getAttribute('src')||''), w:(i.naturalWidth||0), h:(i.naturalHeight||0)})).filter(x => x.src)"
-                        )
-                        if isinstance(imgs2, list):
-                            for it in imgs2:
-                                if isinstance(it, dict):
-                                    _add(str(it.get("src") or ""), w=it.get("w"), h=it.get("h"))
-                                else:
-                                    _add(str(it))
+                        page.wait_for_timeout(600)
                     except Exception:
                         pass
+                    try:
+                        page.mouse.wheel(0, 800)
+                    except Exception:
+                        try:
+                            page.evaluate("() => window.scrollBy(0, 800)")
+                        except Exception:
+                            pass
+                    try:
+                        page.wait_for_timeout(600)
+                    except Exception:
+                        pass
+                    if not advanced and step == 0:
+                        try:
+                            page.click("body", timeout=800)
+                        except Exception:
+                            pass
+                        try:
+                            page.wait_for_timeout(800)
+                        except Exception:
+                            pass
+                    stats["next"] = int(stats.get("next") or 0) + 1
+                    _scan_dom(f"step-{stats.get('next')}")
+                    _scan_visible_big(f"step-{stats.get('next')}")
+                    _scan_inline_bg(f"step-{stats.get('next')}")
                     extract_blobs()
+                    _scan_scripts_for_urls(f"step-{stats.get('next')}")
                     _dbg(f"Carrusel step={stats.get('next')}: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} net_hits={stats.get('net')}")
                 except Exception:
                     _dbg("Carrusel: click Next falló.")
