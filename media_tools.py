@@ -1488,10 +1488,70 @@ def _tiktok_photo_candidates_playwright(
         candidates = re.findall(r"https://[^\s\"']+tiktokcdn\.com[^\s\"']+", str(blob_text or ""), re.IGNORECASE)
         return [u for u in candidates if isinstance(u, str) and _is_img_url(u)]
 
+    def _from_state_obj(state: Any) -> List[str]:
+        out_urls: List[str] = []
+
+        def add_any(v: Any) -> None:
+            if isinstance(v, str):
+                out_urls.append(v)
+                return
+            if isinstance(v, list):
+                for x in v:
+                    add_any(x)
+                return
+            if isinstance(v, dict):
+                for x in v.values():
+                    add_any(x)
+                return
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                item_module = node.get("ItemModule")
+                if isinstance(item_module, dict):
+                    for v in item_module.values():
+                        walk(v)
+
+                ip = node.get("imagePost")
+                if isinstance(ip, dict):
+                    imgs = ip.get("images") or ip.get("imageList")
+                    if isinstance(imgs, list):
+                        for im in imgs:
+                            if isinstance(im, dict):
+                                add_any(im.get("imageURL"))
+                                add_any(im.get("displayImage"))
+                                add_any(im.get("imageUrl"))
+                                add_any(im.get("urls"))
+                                add_any(im.get("url"))
+                                add_any(im.get("urlList"))
+                            else:
+                                add_any(im)
+
+                images = node.get("images")
+                if isinstance(images, list):
+                    for im in images:
+                        if isinstance(im, dict):
+                            add_any(im.get("imageURL"))
+                            add_any(im.get("displayImage"))
+                            add_any(im.get("imageUrl"))
+                            add_any(im.get("urls"))
+                            add_any(im.get("url"))
+                            add_any(im.get("urlList"))
+                        else:
+                            add_any(im)
+
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        walk(state)
+        return [u for u in out_urls if isinstance(u, str) and _is_img_url(u)]
+
     seen_keys: set[str] = set()
     photomode: List[str] = []
     other: List[str] = []
-    stats: Dict[str, int] = {"net": 0, "dom": 0, "blob": 0, "next": 0}
+    stats: Dict[str, int] = {"net": 0, "dom": 0, "blob": 0, "next": 0, "json": 0}
 
     def _add(u: str, *, w: Optional[int] = None, h: Optional[int] = None, from_network: bool = False) -> None:
         s0 = _clean_url(u)
@@ -1773,8 +1833,39 @@ def _tiktok_photo_candidates_playwright(
                 except Exception:
                     pass
 
+            def extract_window_state() -> None:
+                try:
+                    sigi = page.evaluate(
+                        "() => { try { return (window.__SIGI_STATE__ && typeof window.__SIGI_STATE__ === 'object') ? window.__SIGI_STATE__ : null } catch(e) { return null } }"
+                    )
+                    if isinstance(sigi, dict) and sigi:
+                        urls = _from_state_obj(sigi)
+                        stats["json"] = int(stats.get("json") or 0) + 1
+                        _dbg(f"JSON window.__SIGI_STATE__: urls={len(urls)}")
+                        for u in urls:
+                            _add(u)
+                except Exception:
+                    _dbg("JSON window.__SIGI_STATE__: error")
+
+                try:
+                    uni = page.evaluate(
+                        "() => { try { return (window.__UNIVERSAL_DATA_FOR_REHYDRATION__ && typeof window.__UNIVERSAL_DATA_FOR_REHYDRATION__ === 'object') ? window.__UNIVERSAL_DATA_FOR_REHYDRATION__ : null } catch(e) { return null } }"
+                    )
+                    if isinstance(uni, dict) and uni:
+                        urls = _from_state_obj(uni)
+                        stats["json"] = int(stats.get("json") or 0) + 1
+                        _dbg(f"JSON window.__UNIVERSAL_DATA_FOR_REHYDRATION__: urls={len(urls)}")
+                        for u in urls:
+                            _add(u)
+                except Exception:
+                    _dbg("JSON window.__UNIVERSAL_DATA_FOR_REHYDRATION__: error")
+
             extract_blobs()
-            _dbg(f"Post-carga: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} net_hits={stats.get('net')} blob_hits={stats.get('blob')}")
+            extract_window_state()
+            _dbg(
+                f"Post-carga: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} "
+                f"net_hits={stats.get('net')} blob_hits={stats.get('blob')} json_hits={stats.get('json')}"
+            )
             _scan_scripts_for_urls("post-blobs")
 
             carousel_selectors = [
