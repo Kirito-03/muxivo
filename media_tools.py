@@ -1548,6 +1548,90 @@ def _tiktok_photo_candidates_playwright(
         walk(state)
         return [u for u in out_urls if isinstance(u, str) and _is_img_url(u)]
 
+    preferred_item_id = None
+    try:
+        m0 = re.search(r"/photo/(\d+)", str(url or ""))
+        preferred_item_id = m0.group(1) if m0 else None
+    except Exception:
+        preferred_item_id = None
+
+    def _pick_best_from_url_list(urls: Any) -> Optional[str]:
+        if not isinstance(urls, list):
+            return None
+        best_u: Optional[str] = None
+        best_score = -10_000
+        for u in urls:
+            s = str(u or "").strip()
+            if not s:
+                continue
+            s = _normalize_tiktok_photo_image_url(_clean_url(s))
+            if not _is_img_url(s):
+                continue
+            score = _score_img_url(s)
+            if score > best_score:
+                best_score = score
+                best_u = s
+        return best_u
+
+    def _extract_images_from_sigi_state(sigi: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
+        item_module = sigi.get("ItemModule")
+        if not isinstance(item_module, dict) or not item_module:
+            return [], None
+
+        chosen_id: Optional[str] = None
+        chosen_item: Optional[Dict[str, Any]] = None
+
+        if preferred_item_id and preferred_item_id in item_module:
+            it = item_module.get(preferred_item_id)
+            if isinstance(it, dict):
+                chosen_id, chosen_item = preferred_item_id, it
+
+        if chosen_item is None:
+            for k, v in item_module.items():
+                if not isinstance(k, str) or not isinstance(v, dict):
+                    continue
+                ip = v.get("imagePost")
+                if isinstance(ip, dict) and isinstance(ip.get("images"), list) and ip.get("images"):
+                    chosen_id, chosen_item = k, v
+                    break
+
+        if chosen_item is None:
+            return [], None
+
+        ip = chosen_item.get("imagePost")
+        if not isinstance(ip, dict):
+            return [], chosen_id
+
+        imgs = ip.get("images") or ip.get("imageList")
+        if not isinstance(imgs, list) or not imgs:
+            return [], chosen_id
+
+        out: List[str] = []
+        for im in imgs:
+            best: Optional[str] = None
+            if isinstance(im, dict):
+                best = _pick_best_from_url_list(im.get("urlList"))
+                if not best:
+                    img_url = im.get("imageURL")
+                    if isinstance(img_url, dict):
+                        best = _pick_best_from_url_list(img_url.get("urlList"))
+                if not best:
+                    disp = im.get("displayImage")
+                    if isinstance(disp, dict):
+                        best = _pick_best_from_url_list(disp.get("urlList"))
+                if not best:
+                    best = _pick_best_from_url_list(im.get("urls"))
+            elif isinstance(im, list):
+                best = _pick_best_from_url_list(im)
+            elif isinstance(im, str):
+                s = _normalize_tiktok_photo_image_url(_clean_url(im))
+                if _is_img_url(s) and _score_img_url(s) >= 0:
+                    best = s
+            if best:
+                out.append(best)
+
+        return out, chosen_id
+
     seen_keys: set[str] = set()
     photomode: List[str] = []
     other: List[str] = []
@@ -1839,9 +1923,18 @@ def _tiktok_photo_candidates_playwright(
                         "() => { try { return (window.__SIGI_STATE__ && typeof window.__SIGI_STATE__ === 'object') ? window.__SIGI_STATE__ : null } catch(e) { return null } }"
                     )
                     if isinstance(sigi, dict) and sigi:
-                        urls = _from_state_obj(sigi)
+                        try:
+                            item_module = sigi.get("ItemModule")
+                            _dbg(
+                                f"SIGI_STATE encontrado. item_id_hint={preferred_item_id or 'NA'} "
+                                f"ItemModule_keys={len(item_module) if isinstance(item_module, dict) else 0}"
+                            )
+                        except Exception:
+                            _dbg("SIGI_STATE encontrado.")
+
+                        urls, chosen_id = _extract_images_from_sigi_state(sigi)
                         stats["json"] = int(stats.get("json") or 0) + 1
-                        _dbg(f"JSON window.__SIGI_STATE__: urls={len(urls)}")
+                        _dbg(f"SIGI_STATE item_id={chosen_id or 'NA'} images_from_json={len(urls)}")
                         for u in urls:
                             _add(u)
                 except Exception:
