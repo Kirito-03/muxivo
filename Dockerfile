@@ -3,15 +3,21 @@ FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PORT=7860
+    PORT=7860 \
+    DENO_INSTALL=/usr/local
 
 WORKDIR /app
 
 COPY packages.txt ./
 RUN apt-get update \
     && tr -d '\r' < packages.txt | xargs -r apt-get install -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno — runtime JS requerido por yt-dlp para resolver nsig/signature challenges de YouTube
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && ln -sf /usr/local/bin/deno /usr/bin/deno \
+    && deno --version
 
 COPY requirements.txt ./
 RUN python -m pip install --upgrade pip \

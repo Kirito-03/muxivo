@@ -913,13 +913,23 @@ def _apply_youtube_ydl_tuning(url: str, params: Dict[str, Any], kind: str, max_h
     h = int(max_height)
     if kind == "video":
         params["format"] = (
-            f"bestvideo[height<=?{h}]+bestaudio/"
-            f"best[height<=?{h}]/"
-            f"bestvideo+bestaudio/"
+            f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
+            f"b[height<={h}][ext=mp4]/"
+            f"best[height<={h}]/"
+            f"bv*[height<={h}]+ba/"
             f"best"
         )
     elif kind == "audio":
-        params["format"] = "bestaudio/best"
+        params["format"] = "bestaudio[ext=m4a]/bestaudio/best"
+    try:
+        print(
+            f"[YOUTUBE] tuning applied: kind={kind} max_height={h} "
+            f"format={params.get('format', 'N/A')} "
+            f"clients={params.get('extractor_args', {}).get('youtube', {}).get('player_client', 'default')}",
+            flush=True,
+        )
+    except Exception:
+        pass
 
 # -------- SHORT-URL RESOLVER (segue redirects HTTP) --------
 _SHORT_TIKTOK_HOSTS = {"vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com"}
@@ -1120,8 +1130,9 @@ def _domains_from_urls(urls: List[str]) -> List[str]:
 
 
 def _client_order() -> List[str]:
-    # android/ios/web dan formatos progresivos más compatibles sin requerir JS extra
-    return ["android", "ios", "web"]
+    # web funciona mejor con cookies + Deno JS runtime para resolver nsig/signature
+    # ios/android como fallback si web falla
+    return ["web", "ios", "android"]
 
 
 def _is_yt_playlist_url(u: str) -> bool:
@@ -3787,16 +3798,16 @@ def download_with_ytdlp(
 
     h = int(max_height)
     if kind == "audio":
-        fmt_str = "bestaudio/best"
+        fmt_str = "bestaudio[ext=m4a]/bestaudio/best"
     elif kind == "video":
-        # Prioriza formatos progresivos completos, que funcionan mejor en YouTube/TikTok/Instagram.
+        # bv*+ba para YouTube (DASH con Deno resuelve nsig correctamente)
+        # best[ext=mp4] como fallback progresivo para TikTok/Instagram
         fmt_str = (
-            f"best[ext=mp4][height<=?{h}]/"
-            f"best[height<=?{h}]/"
-            f"best[ext=mp4]/"
-            f"best/"
-            f"bestvideo[height<=?{h}]+bestaudio/"
-            f"bestvideo+bestaudio"
+            f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
+            f"bv*[height<={h}]+ba/"
+            f"b[height<={h}][ext=mp4]/"
+            f"best[height<={h}]/"
+            f"best"
         )
     else:
         # Para "imagen", simplemente usa el mejor archivo disponible
