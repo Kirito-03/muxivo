@@ -23,12 +23,12 @@ services:
       - media_downloads:/app/downloads
       - media_previews:/app/preview_cache
       - media_served:/app/served_files
-      # Cookies — estructura organizada por plataforma (read-only)
-      - ./cookies:/app/cookies:ro
-      # Fallback legacy — archivos sueltos en raíz del VPS (read-only)
-      - ./www.youtube.com_cookies.txt:/app/www.youtube.com_cookies.txt:ro
-      - ./www.instagram.com_cookies.txt:/app/www.instagram.com_cookies.txt:ro
-      - ./www.tiktok.com_cookies.txt:/app/www.tiktok.com_cookies.txt:ro
+      # Cookies — estructura organizada por plataforma (rw: yt-dlp actualiza cookies)
+      - ./cookies:/app/cookies
+      # Fallback legacy — archivos sueltos en raíz del VPS
+      - ./www.youtube.com_cookies.txt:/app/www.youtube.com_cookies.txt
+      - ./www.instagram.com_cookies.txt:/app/www.instagram.com_cookies.txt
+      - ./www.tiktok.com_cookies.txt:/app/www.tiktok.com_cookies.txt
 
 volumes:
   media_downloads:

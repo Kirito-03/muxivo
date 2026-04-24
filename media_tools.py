@@ -548,7 +548,7 @@ def _is_instagram_cookie_invalid_error(text: str) -> bool:
 
 
 _YOUTUBE_COOKIES_EXPIRED_UI = (
-    "Las cookies de YouTube están vencidas o incompletas. Exporta nuevas cookies desde un navegador con sesión activa."
+    "Las cookies de YouTube existen, pero YouTube las rechazó. Exporta cookies nuevas desde un navegador con sesión activa."
 )
 _INSTAGRAM_COOKIES_EXPIRED_UI = (
     "Las cookies de Instagram están vencidas o incompletas. Exporta nuevas cookies desde un navegador con sesión activa."
@@ -665,13 +665,14 @@ def get_cookiefile_for_platform(platform: str) -> Optional[Path]:
 
         diag = validate_cookiefile(p, p0)
         try:
+            writable = os.access(str(p0), os.W_OK) if p0.exists() else False
             tag = "selected"
             if "/backup_" in str(p0).replace("\\", "/"):
                 tag = f"trying backup={p0}"
             print(
                 f"[COOKIES] platform={p} {tag}={str(p0)} "
                 f"exists={bool(diag.get('exists'))} size={int(diag.get('size') or 0)} "
-                f"valid={bool(diag.get('valid'))}",
+                f"valid={bool(diag.get('valid'))} writable={writable}",
                 flush=True,
             )
             if not diag.get("valid"):
