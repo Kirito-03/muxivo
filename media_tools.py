@@ -89,6 +89,18 @@ def _cookies_file_usable(p: Optional[Path]) -> Tuple[bool, Optional[int]]:
         return False, None
 
 
+def _cookies_file_usable_min(p: Optional[Path], min_bytes: int) -> Tuple[bool, Optional[int]]:
+    usable, size = _cookies_file_usable(p)
+    if not usable:
+        return False, size
+    try:
+        if isinstance(size, int) and size < int(min_bytes):
+            return False, size
+    except Exception:
+        return False, size
+    return True, size
+
+
 def _read_netscape_cookies(p: Optional[Path]) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     usable, _ = _cookies_file_usable(p)
@@ -240,13 +252,53 @@ def _extract_info_with_cookie_fallback(
             except Exception:
                 pass
         _log_cookie_state("[YTDLP extract]", url, opts, cookies_path)
-        try:
-            _apply_platform_cookiefile(url, opts)
-        except Exception:
-            pass
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        return info, used_cookies, auth_failed
+        last_exc: Optional[Exception] = None
+        for _ in range(3):
+            try:
+                try:
+                    _apply_platform_cookiefile(url, opts)
+                except Exception:
+                    pass
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                return info, used_cookies, auth_failed
+            except Exception as e:
+                last_exc = e
+                msg = str(e or "")
+                if _is_youtube_url(url) and opts.get("cookiefile") and _is_youtube_cookie_invalid_error(msg):
+                    try:
+                        mark_cookiefile_invalid("youtube", "expired", Path(str(opts.get("cookiefile"))))
+                    except Exception:
+                        pass
+                    try:
+                        print("[YOUTUBE] cookies INVALID (yt-dlp).", flush=True)
+                        print("[YOUTUBE] cookies SKIPPED", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        opts.pop("cookiefile", None)
+                    except Exception:
+                        pass
+                    continue
+                if _is_instagram_url(url) and opts.get("cookiefile") and _is_instagram_cookie_invalid_error(msg):
+                    try:
+                        mark_cookiefile_invalid("instagram", "expired", Path(str(opts.get("cookiefile"))))
+                    except Exception:
+                        pass
+                    try:
+                        print("[INSTAGRAM] cookies INVALID (yt-dlp).", flush=True)
+                        print("[INSTAGRAM] cookies SKIPPED", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        opts.pop("cookiefile", None)
+                    except Exception:
+                        pass
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("yt-dlp extract failed")
     except Exception as e:
         msg0 = str(e or "")
         low0 = msg0.lower()
@@ -423,6 +475,9 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
     if p == "youtube":
         return [
             os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "",
+            "/app/cookies/youtube/current.txt",
+            "/app/cookies/youtube/backup_1.txt",
+            "/app/cookies/youtube/backup_2.txt",
             "/app/www.youtube.com_cookies.txt",
             "www.youtube.com_cookies.txt",
             "/app/youtube_cookies.txt",
@@ -431,34 +486,231 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
     if p == "tiktok":
         return [
             os.environ.get("MEDIA_DOWNLOADER_TIKTOK_COOKIES_FILE") or "",
+            os.environ.get("MEDIA_DOWNLOADER_COOKIES_TIKTOK_FILE") or "",
+            "/app/cookies/tiktok/current.txt",
+            "/app/cookies/tiktok/backup_1.txt",
+            "/app/cookies/tiktok/backup_2.txt",
             "/app/www.tiktok.com_cookies.txt",
             "www.tiktok.com_cookies.txt",
+            "/app/cookies/www.tiktok.com_cookies.txt",
         ]
     if p == "instagram":
         return [
             os.environ.get("MEDIA_DOWNLOADER_INSTAGRAM_COOKIES_FILE") or "",
+            os.environ.get("MEDIA_DOWNLOADER_COOKIES_INSTAGRAM_FILE") or "",
+            "/app/cookies/instagram/current.txt",
+            "/app/cookies/instagram/backup_1.txt",
+            "/app/cookies/instagram/backup_2.txt",
             "/app/www.instagram.com_cookies.txt",
             "www.instagram.com_cookies.txt",
+            "/app/cookies/www.instagram.com_cookies.txt",
         ]
     return []
 
 
-def _cookiefile_path_for_platform(platform: str) -> Optional[Path]:
-    for cand in _cookiefile_candidates_for_platform(platform):
+def _platform_cookie_min_bytes(platform: str) -> int:
+    p = (platform or "").strip().lower()
+    if p == "youtube":
+        return 10 * 1024
+    if p in ("instagram", "tiktok"):
+        return 5 * 1024
+    return 1
+
+
+def _is_youtube_cookie_invalid_error(text: str) -> bool:
+    low = (text or "").lower()
+    markers = [
+        "cookies are no longer valid",
+        "cookie is no longer valid",
+        "sign in to confirm",
+        "confirm you’re not a bot",
+        "confirm you're not a bot",
+        "this browser or app may not be secure",
+        "account verification required",
+    ]
+    return any(m in low for m in markers)
+
+def _is_instagram_cookie_invalid_error(text: str) -> bool:
+    low = (text or "").lower()
+    markers = [
+        "instagram api is not granting access",
+        "instagram sent an empty media response",
+        "empty media response",
+        "login required",
+        "please log in",
+        "requires login",
+        "checkpoint required",
+        "consent",
+        "http error 403",
+        "forbidden",
+    ]
+    return any(m in low for m in markers)
+
+
+_YOUTUBE_COOKIES_EXPIRED_UI = (
+    "Las cookies de YouTube están vencidas o incompletas. Exporta nuevas cookies desde un navegador con sesión activa."
+)
+_INSTAGRAM_COOKIES_EXPIRED_UI = (
+    "Las cookies de Instagram están vencidas o incompletas. Exporta nuevas cookies desde un navegador con sesión activa."
+)
+
+_COOKIEFILE_RUNTIME_INVALID: Dict[str, Dict[str, str]] = {"youtube": {}, "instagram": {}, "tiktok": {}}
+
+
+def mark_cookiefile_invalid(platform: str, reason: str, path: Optional[Path] = None) -> None:
+    p = (platform or "").strip().lower()
+    if p not in _COOKIEFILE_RUNTIME_INVALID:
+        return
+    if not path:
+        return
+    k = str(path)
+    _COOKIEFILE_RUNTIME_INVALID[p][k] = str(reason or "invalid")
+    print(f"[COOKIES] platform={p} invalid reason={reason} file={k}", flush=True)
+
+
+def validate_cookiefile(platform: str, path: Optional[Path]) -> Dict[str, Any]:
+    p = (platform or "").strip().lower()
+    usable, size0 = _cookies_file_usable(path)
+    size = int(size0 or 0)
+    out: Dict[str, Any] = {
+        "platform": p,
+        "path": str(path) if path else None,
+        "exists": bool(path and path.exists() and path.is_file()),
+        "size": size,
+        "valid": False,
+        "critical": False,
+        "reason": "missing",
+    }
+    if not usable or not path:
+        return out
+
+    min_bytes = _platform_cookie_min_bytes(p)
+    if size < int(min_bytes):
+        out["reason"] = f"too_small<{int(min_bytes)}"
+        return out
+
+    rows = _read_netscape_cookies(path)
+    domains = {str(r.get("domain") or "").lower().strip() for r in rows}
+    names = {str(r.get("name") or "").lower().strip() for r in rows}
+
+    if p == "youtube":
+        if not any(("youtube.com" in d) for d in domains):
+            out["reason"] = "missing_youtube_domain"
+            return out
+        critical = {"sapisid", "sid", "hsid", "ssid", "login_info"}
+        has_critical = any(c in names for c in critical)
+        out["critical"] = bool(has_critical)
+        if not has_critical:
+            out["reason"] = "missing_critical"
+            return out
+        out["valid"] = True
+        out["reason"] = "ok"
+        return out
+
+    if p == "instagram":
+        if not any(("instagram.com" in d) for d in domains):
+            out["reason"] = "missing_instagram_domain"
+            return out
+        need = {"sessionid", "csrftoken", "ds_user_id"}
+        missing = [k for k in sorted(need) if k not in names]
+        if missing:
+            out["reason"] = f"missing_{missing[0]}"
+            out["critical"] = False
+            return out
+        out["critical"] = True
+        out["valid"] = True
+        out["reason"] = "ok"
+        return out
+
+    if p == "tiktok":
+        if not any(("tiktok.com" in d) for d in domains):
+            out["reason"] = "missing_tiktok_domain"
+            return out
+        out["valid"] = True
+        out["critical"] = True
+        out["reason"] = "ok"
+        return out
+
+    # plataforma desconocida: aceptar si existe y tiene tamaño
+    out["valid"] = True
+    out["critical"] = True
+    out["reason"] = "ok"
+    return out
+
+
+def should_use_cookiefile(platform: str) -> bool:
+    p = (platform or "").strip().lower()
+    return bool(get_cookiefile_for_platform(p))
+
+
+def get_cookiefile_for_platform(platform: str) -> Optional[Path]:
+    p = (platform or "").strip().lower()
+    candidates = _cookiefile_candidates_for_platform(p)
+    invalid = _COOKIEFILE_RUNTIME_INVALID.get(p) or {}
+    for idx, cand in enumerate([c for c in candidates if str(c or "").strip()], start=1):
         try:
-            c = str(cand or "").strip()
-            if not c:
-                continue
-            p0 = Path(c).expanduser()
+            p0 = Path(str(cand)).expanduser()
             if not p0.is_absolute():
                 p0 = (Path(os.getcwd()) / p0).resolve()
             p0 = p0.resolve()
-            usable, _ = _cookies_file_usable(p0)
-            if usable:
-                return p0
         except Exception:
             continue
+
+        if str(p0) in invalid:
+            print(
+                f"[COOKIES] platform={p} skipped={str(p0)} reason=runtime_invalid",
+                flush=True,
+            )
+            continue
+
+        diag = validate_cookiefile(p, p0)
+        try:
+            tag = "selected"
+            if "/backup_" in str(p0).replace("\\", "/"):
+                tag = f"trying backup={p0}"
+            print(
+                f"[COOKIES] platform={p} {tag}={str(p0)} "
+                f"exists={bool(diag.get('exists'))} size={int(diag.get('size') or 0)} "
+                f"valid={bool(diag.get('valid'))}",
+                flush=True,
+            )
+            if not diag.get("valid"):
+                print(
+                    f"[COOKIES] platform={p} invalid reason={str(diag.get('reason') or 'invalid')}",
+                    flush=True,
+                )
+                if p == "youtube" and bool(diag.get("exists")):
+                    print("[YOUTUBE] cookies INVALID", flush=True)
+                    print("[YOUTUBE] cookies SKIPPED", flush=True)
+                if p == "instagram" and bool(diag.get("exists")):
+                    print("[INSTAGRAM] cookies INVALID", flush=True)
+                    print("[INSTAGRAM] cookies SKIPPED", flush=True)
+                if p == "tiktok" and bool(diag.get("exists")):
+                    print("[TIKTOK] cookies INVALID", flush=True)
+                    print("[TIKTOK] cookies SKIPPED", flush=True)
+        except Exception:
+            pass
+
+        if diag.get("valid"):
+            return p0
     return None
+
+
+def _cookiefile_path_for_platform(platform: str) -> Optional[Path]:
+    return get_cookiefile_for_platform(platform)
+
+
+# ---- API pública para gestión de cookies (aliases explícitos) ----
+def get_cookie_candidates(platform: str) -> List[str]:
+    """Devuelve la lista ordenada de rutas candidatas para cookies de la plataforma."""
+    return [c for c in _cookiefile_candidates_for_platform(platform) if str(c or "").strip()]
+
+
+def select_cookiefile(platform: str) -> Optional[Path]:
+    """Selecciona el mejor archivo de cookies válido para la plataforma.
+    Recorre candidatos en orden, valida cada uno y retorna el primero válido.
+    Es un alias público de get_cookiefile_for_platform."""
+    return get_cookiefile_for_platform(platform)
 
 
 def _platform_for_url(url: str) -> Optional[str]:
@@ -475,49 +727,15 @@ def _apply_platform_cookiefile(url: str, opts: Dict[str, Any]) -> None:
     platform = _platform_for_url(url)
     if not platform:
         return
-
-    candidates = [c for c in _cookiefile_candidates_for_platform(platform) if str(c or "").strip()]
-    primary = candidates[0] if candidates else ""
-
-    exists = False
-    size = 0
-    file_label = ""
-    try:
-        if primary:
-            p_raw = Path(primary).expanduser()
-            if not p_raw.is_absolute():
-                p_raw = (Path(os.getcwd()) / p_raw).resolve()
-            p_raw = p_raw.resolve()
-            file_label = str(p_raw)
-            exists = bool(p_raw.exists() and p_raw.is_file())
-            size = int(p_raw.stat().st_size) if exists else 0
-        else:
-            file_label = f"/app/www.{platform}.com_cookies.txt"
-    except Exception:
-        exists = False
-        size = 0
-        file_label = f"/app/www.{platform}.com_cookies.txt"
-
-    p = _cookiefile_path_for_platform(platform)
-    using = bool(p)
-    if using and p:
-        opts["cookiefile"] = str(p)
+    selected = get_cookiefile_for_platform(platform)
+    if selected:
+        opts["cookiefile"] = str(selected)
     else:
         try:
-            if str(opts.get("cookiefile") or "").strip() in (
-                "/app/www.youtube.com_cookies.txt",
-                "/app/www.tiktok.com_cookies.txt",
-                "/app/www.instagram.com_cookies.txt",
-                "/app/youtube_cookies.txt",
-            ):
-                opts.pop("cookiefile", None)
+            opts.pop("cookiefile", None)
         except Exception:
             pass
-
-    print(
-        f"[COOKIES] platform={platform} file={str(p) if p else file_label} exists={exists} size={int(size)}",
-        flush=True,
-    )
+        print(f"[COOKIES] platform={platform} selected=None exists=False size=0", flush=True)
 
     if platform == "youtube":
         try:
@@ -2443,6 +2661,16 @@ def _instagram_post_probe_playwright(
     except Exception:
         return out
 
+    try:
+        if cookies_path:
+            diag0 = validate_cookiefile("instagram", cookies_path)
+            if not bool(diag0.get("valid")):
+                cookies_path = None
+        if not cookies_path:
+            cookies_path = get_cookiefile_for_platform("instagram")
+    except Exception:
+        pass
+
     def _is_img_url(u: str) -> bool:
         s = str(u or "").strip()
         if not s.startswith(("http://", "https://")):
@@ -3648,6 +3876,8 @@ def download_with_ytdlp(
         attempts = max(1, int(max_retries))
         base_wait = 20.0
         switched_ip_stack = False
+        youtube_cookie_invalid_seen = False
+        instagram_cookie_invalid_seen = False
         for attempt in range(attempts):
             if attempt == 0:
                 _log_cookie_state("[YTDLP download]", url, ydl.params, cookies_path)
@@ -3665,6 +3895,12 @@ def download_with_ytdlp(
             except DownloadError as e:
                 msg = str(e)
                 low = msg.lower()
+                tail = ""
+                try:
+                    tail = ydl_logger.tail(80)
+                except Exception:
+                    tail = ""
+
                 if _is_youtube_url(url):
                     tail = ""
                     try:
@@ -3677,6 +3913,41 @@ def download_with_ytdlp(
                             print(f"[YOUTUBE] yt-dlp log tail:\n{tail}", flush=True)
                     except Exception:
                         pass
+                    if ydl.params.get("cookiefile") and _is_youtube_cookie_invalid_error(msg + "\n" + (tail or "")):
+                        youtube_cookie_invalid_seen = True
+                        try:
+                            mark_cookiefile_invalid("youtube", "expired", Path(str(ydl.params.get("cookiefile"))))
+                        except Exception:
+                            pass
+                        try:
+                            print("[YOUTUBE] cookies INVALID (yt-dlp).", flush=True)
+                            print("[YOUTUBE] cookies SKIPPED", flush=True)
+                        except Exception:
+                            pass
+                        try:
+                            ydl.params.pop("cookiefile", None)
+                        except Exception:
+                            pass
+                        continue
+
+                if _is_instagram_url(url) and ydl.params.get("cookiefile") and _is_instagram_cookie_invalid_error(
+                    msg + "\n" + (tail or "")
+                ):
+                    instagram_cookie_invalid_seen = True
+                    try:
+                        mark_cookiefile_invalid("instagram", "expired", Path(str(ydl.params.get("cookiefile"))))
+                    except Exception:
+                        pass
+                    try:
+                        print("[INSTAGRAM] cookies INVALID (yt-dlp).", flush=True)
+                        print("[INSTAGRAM] cookies SKIPPED", flush=True)
+                    except Exception:
+                        pass
+                    try:
+                        ydl.params.pop("cookiefile", None)
+                    except Exception:
+                        pass
+                    continue
 
                 if _is_auth_error(msg):
                     try:
@@ -3696,6 +3967,8 @@ def download_with_ytdlp(
                             time.sleep(1.0)
                             continue
                         if not cookiefile:
+                            if instagram_cookie_invalid_seen:
+                                return _INSTAGRAM_COOKIES_EXPIRED_UI
                             return "Instagram requiere autenticación adicional y no se encontraron cookies válidas."
                         return "No se pudo acceder al contenido incluso usando cookies."
 
@@ -3733,7 +4006,19 @@ def download_with_ytdlp(
                     except Exception:
                         tail = ""
                     if tail:
-                        return f"yt-dlp: {msg}\n{tail}"
+                        base_err = f"yt-dlp: {msg}\n{tail}"
+                    else:
+                        base_err = f"yt-dlp: {msg}"
+                    if youtube_cookie_invalid_seen:
+                        return f"{_YOUTUBE_COOKIES_EXPIRED_UI}\n{base_err}"
+                    return base_err
+                if _is_instagram_url(url):
+                    base_err = f"yt-dlp: {msg}"
+                    if tail:
+                        base_err = f"yt-dlp: {msg}\n{tail}"
+                    if instagram_cookie_invalid_seen:
+                        return f"{_INSTAGRAM_COOKIES_EXPIRED_UI}\n{base_err}"
+                    return base_err
                 return f"yt-dlp: {msg}"
             except Exception as e:
                 try:

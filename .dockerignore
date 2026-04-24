@@ -22,6 +22,7 @@ Thumbs.db
 node_modules/
 deploy/caddy_data/
 deploy/caddy_config/
+cookies/
 cookies_instagram.txt
 www.instagram.com_cookies.txt
 www.tiktok.com_cookies.txt

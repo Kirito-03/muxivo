@@ -16,7 +16,9 @@ served_files/
 # Docker
 *.env
 
-# Cookies (MUY IMPORTANTE)
-*.txt
+# Cookies — archivos sensibles, solo en VPS
+cookies/
 www.instagram.com_cookies.txt
 www.tiktok.com_cookies.txt
+www.youtube.com_cookies.txt
+*_cookies.txt

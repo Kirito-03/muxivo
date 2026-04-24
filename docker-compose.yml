@@ -9,9 +9,6 @@ services:
     shm_size: "1gb"
     environment:
       PORT: 7860
-      MEDIA_DOWNLOADER_COOKIES_INSTAGRAM_FILE: /app/cookies/www.instagram.com_cookies.txt
-      MEDIA_DOWNLOADER_COOKIES_TIKTOK_FILE: /app/cookies/www.tiktok.com_cookies.txt
-      MEDIA_DOWNLOADER_COOKIES_MERGE: "1"
       AUTODESTRUCT_INTERVAL_SECONDS: 600
       AUTODESTRUCT_MAX_AGE_SECONDS: 1800
       MAX_SESSION_COUNT: ${MAX_SESSION_COUNT:-5}
@@ -26,12 +23,12 @@ services:
       - media_downloads:/app/downloads
       - media_previews:/app/preview_cache
       - media_served:/app/served_files
-      - ./www.instagram.com_cookies.txt:/app/cookies/www.instagram.com_cookies.txt:ro
-      - ./www.tiktok.com_cookies.txt:/app/cookies/www.tiktok.com_cookies.txt:ro
+      # Cookies — estructura organizada por plataforma (read-only)
+      - ./cookies:/app/cookies:ro
+      # Fallback legacy — archivos sueltos en raíz del VPS (read-only)
       - ./www.youtube.com_cookies.txt:/app/www.youtube.com_cookies.txt:ro
-      - ./www.tiktok.com_cookies.txt:/app/www.tiktok.com_cookies.txt:ro
       - ./www.instagram.com_cookies.txt:/app/www.instagram.com_cookies.txt:ro
-      - ./www.youtube.com_cookies.txt:/app/youtube_cookies.txt:ro
+      - ./www.tiktok.com_cookies.txt:/app/www.tiktok.com_cookies.txt:ro
 
 volumes:
   media_downloads:
