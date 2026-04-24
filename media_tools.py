@@ -14,6 +14,7 @@ import tempfile
 import re
 import ssl
 import unicodedata
+import traceback
 import urllib.request
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
@@ -226,7 +227,23 @@ def _extract_info_with_cookie_fallback(
     used_cookies = False
     auth_failed = False
     try:
+        if _is_youtube_url(url):
+            try:
+                url2 = _normalize_youtube_single_video_url(url)
+                if url2 and url2 != url:
+                    print(f"[YOUTUBE] Normalized URL: {url} -> {url2}", flush=True)
+                    url = url2
+            except Exception:
+                pass
+            try:
+                opts["noplaylist"] = True
+            except Exception:
+                pass
         _log_cookie_state("[YTDLP extract]", url, opts, cookies_path)
+        try:
+            _apply_youtube_cookiefile(url, opts)
+        except Exception:
+            pass
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         return info, used_cookies, auth_failed
@@ -275,6 +292,41 @@ class _NullLogger:
 
     def error(self, msg: Any) -> None:
         return None
+
+
+class _YTDLPCaptureLogger:
+    def __init__(self, max_lines: int = 250) -> None:
+        self._max = max(50, int(max_lines))
+        self._lines: List[str] = []
+
+    def _add(self, level: str, msg: Any) -> None:
+        try:
+            s = str(msg)
+        except Exception:
+            s = repr(msg)
+        line = f"{level}: {s}"
+        self._lines.append(line)
+        if len(self._lines) > self._max:
+            self._lines = self._lines[-self._max :]
+
+    def debug(self, msg: Any) -> None:
+        self._add("DEBUG", msg)
+
+    def info(self, msg: Any) -> None:
+        self._add("INFO", msg)
+
+    def warning(self, msg: Any) -> None:
+        self._add("WARN", msg)
+
+    def error(self, msg: Any) -> None:
+        self._add("ERROR", msg)
+
+    def tail(self, n: int = 60) -> str:
+        try:
+            nn = max(1, int(n))
+        except Exception:
+            nn = 60
+        return "\n".join(self._lines[-nn:])
 
 
 _DEFAULT_UA = (
@@ -338,6 +390,102 @@ def _ydl_net_opts(
             pass
 
     return opts
+
+
+def _is_youtube_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        host = ""
+    if host == "youtu.be":
+        return True
+    return host.endswith("youtube.com") or host.endswith("googlevideo.com") or "youtube.com" in host
+
+
+def _youtube_cookiefile_path() -> Optional[Path]:
+    raw = (os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "").strip()
+    if not raw:
+        for cand in ("youtube_cookies.txt", "www.youtube.com_cookies.txt", "/app/youtube_cookies.txt"):
+            try:
+                p0 = Path(cand).expanduser()
+                if not p0.is_absolute():
+                    p0 = (Path(os.getcwd()) / p0).resolve()
+                p0 = p0.resolve()
+                usable, _ = _cookies_file_usable(p0)
+                if usable:
+                    return p0
+            except Exception:
+                continue
+        return None
+    try:
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (Path(os.getcwd()) / p).resolve()
+        p = p.resolve()
+        usable, _ = _cookies_file_usable(p)
+        if usable:
+            return p
+        return None
+    except Exception:
+        return None
+
+
+def _apply_youtube_cookiefile(url: str, opts: Dict[str, Any]) -> None:
+    if not _is_youtube_url(url):
+        return
+    raw = (os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "").strip()
+    p_raw: Optional[Path] = None
+    exists = False
+    size: Optional[int] = None
+    try:
+        cand0 = raw or "www.youtube.com_cookies.txt"
+        if cand0:
+            p_raw = Path(cand0).expanduser()
+            if not p_raw.is_absolute():
+                p_raw = (Path(os.getcwd()) / p_raw).resolve()
+            p_raw = p_raw.resolve()
+            exists = bool(p_raw.exists() and p_raw.is_file())
+            size = int(p_raw.stat().st_size) if exists else None
+    except Exception:
+        p_raw = None
+        exists = False
+        size = None
+
+    p = _youtube_cookiefile_path()
+    using = bool(p)
+    if using and p:
+        opts["cookiefile"] = str(p)
+    else:
+        try:
+            opts.pop("cookiefile", None)
+        except Exception:
+            pass
+
+    print(f"[YOUTUBE] Using cookies: {using}", flush=True)
+    print(f"[YOUTUBE] Cookie file: {str(p) if p else '/app/youtube_cookies.txt'}", flush=True)
+    print(f"[YOUTUBE] Cookie file exists: {exists}", flush=True)
+    print(f"[YOUTUBE] Cookie size: {int(size) if isinstance(size, int) else 0}", flush=True)
+    try:
+        ver = ""
+        try:
+            ver = str(getattr(yt_dlp, "__version__", "") or "")
+        except Exception:
+            ver = ""
+        if not ver:
+            try:
+                import yt_dlp.version as _ydv  # type: ignore
+
+                ver = str(getattr(_ydv, "__version__", "") or "")
+            except Exception:
+                ver = ""
+        if ver:
+            print(f"[YOUTUBE] yt-dlp version: {ver}", flush=True)
+    except Exception:
+        pass
+    try:
+        print(f"[YOUTUBE] ffmpeg in PATH: {bool(shutil.which('ffmpeg'))}", flush=True)
+    except Exception:
+        pass
 
 
 def _slugify(text: Optional[str], maxlen: int = 40) -> str:
@@ -417,6 +565,54 @@ def _norm_youtube(u: str) -> str:
         return urlunparse(new)
 
     return u
+
+
+def _normalize_youtube_single_video_url(u: str) -> str:
+    p = urlparse(u)
+    host = (p.netloc or "").lower()
+    path = p.path or ""
+    q = parse_qs(p.query or "")
+
+    if host in {"m.youtube.com", "music.youtube.com"}:
+        host = "www.youtube.com"
+    if host == "youtu.be":
+        vid = path.strip("/").split("/")[0] if path.strip("/") else ""
+        if vid:
+            new = p._replace(scheme="https", netloc="www.youtube.com", path="/watch", query=urlencode({"v": vid}))
+            return urlunparse(new)
+        return u
+
+    if host.endswith("youtube.com") and path.startswith("/shorts/"):
+        parts = path.split("/")
+        vid = parts[2] if len(parts) >= 3 else ""
+        if vid:
+            new = p._replace(scheme="https", netloc="www.youtube.com", path="/watch", query=urlencode({"v": vid}))
+            return urlunparse(new)
+
+    if host.endswith("youtube.com") and path.startswith("/watch"):
+        vid = (q.get("v") or [""])[0]
+        if vid:
+            new = p._replace(scheme="https", netloc="www.youtube.com", path="/watch", query=urlencode({"v": vid}))
+            return urlunparse(new)
+
+    return u
+
+
+def _apply_youtube_ydl_tuning(url: str, params: Dict[str, Any], kind: str, max_height: int) -> None:
+    if not _is_youtube_url(url):
+        return
+    params["noplaylist"] = True
+    params["no_warnings"] = False
+    h = int(max_height)
+    if kind == "video":
+        params["format"] = (
+            f"bestvideo[height<=?{h}]+bestaudio/"
+            f"best[height<=?{h}]/"
+            f"bestvideo+bestaudio/"
+            f"best"
+        )
+    elif kind == "audio":
+        params["format"] = "bestaudio/best"
 
 # -------- SHORT-URL RESOLVER (segue redirects HTTP) --------
 _SHORT_TIKTOK_HOSTS = {"vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com"}
@@ -836,7 +1032,7 @@ def download_images_with_ytdlp(
                         candidates_from_selection = True
                     else:
                         candidates, uploader_name, title_name = _tiktok_photo_candidates_playwright(
-                            url, timeout=25, cookies_path=cookies_path
+                            url, timeout=12, cookies_path=cookies_path
                         )
                         _dbg(f"Playwright candidates={len(candidates)}")
                         if not candidates:
@@ -875,7 +1071,9 @@ def download_images_with_ytdlp(
                             fails.append(
                                 (
                                     url,
-                                    "Se detectó un TikTok de imágenes, pero no se pudieron obtener las imágenes descargables en este entorno.",
+                                    "TikTok de imágenes no expone la galería completa en este entorno del servidor. "
+                                    "Solo se pudo obtener una vista previa. "
+                                    "Para descargar la galería completa, usa modo local o cookies/navegador compatibles.",
                                 )
                             )
                             _dbg("Sin imágenes reales: cae al mensaje de entorno (preview fallback en UI).")
@@ -1356,6 +1554,12 @@ def _tiktok_photo_candidates_playwright(
         "no",
         "off",
     )
+    try:
+        max_steps = int(os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PW_MAX_STEPS", "6") or "6")
+    except Exception:
+        max_steps = 6
+    if max_steps < 0:
+        max_steps = 0
 
     def _dbg(msg: str) -> None:
         if not debug:
@@ -1941,7 +2145,7 @@ def _tiktok_photo_candidates_playwright(
             except Exception:
                 pass
             try:
-                page.wait_for_timeout(3500)
+                page.wait_for_timeout(1200)
             except Exception:
                 pass
 
@@ -2035,6 +2239,16 @@ def _tiktok_photo_candidates_playwright(
             )
             _scan_scripts_for_urls("post-blobs")
 
+            fast_fail = (
+                len(seen_keys) == 0
+                and int(stats.get("net") or 0) == 0
+                and int(stats.get("dom") or 0) == 0
+                and int(stats.get("json") or 0) == 0
+            )
+            if fast_fail:
+                _dbg("Fast-fail: entorno restringido (dom=0 net=0 json=0) -> saltando carrusel.")
+                max_steps = 0
+
             carousel_selectors = [
                 'button[aria-label*="Next" i]',
                 'button[aria-label*="Siguiente" i]',
@@ -2060,7 +2274,7 @@ def _tiktok_photo_candidates_playwright(
                             continue
                 return False
 
-            for step in range(16):
+            for step in range(max_steps):
                 btn = None
                 try:
                     advanced = _try_next_button()
@@ -2844,28 +3058,35 @@ def probe_image_candidates(
             use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
             candidates2 = []
             if use_pw not in ("0", "false", "no", "off"):
-                candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=25, cookies_path=cookies_path)
+                candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=12, cookies_path=cookies_path)
             if not candidates2:
                 candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
         except Exception:
             candidates2 = []
         if not candidates2:
-            video_url = _tiktok_video_url_from_photo_url(url)
-            if video_url:
-                info2, _, _ = _extract_info_with_cookie_fallback(video_url, opts, cookies_path)
-                if info2:
-                    candidates2 = _collect_image_candidates(info2)
-                    fallback_used = bool(candidates2)
-        if not candidates2:
-            og = _tiktok_photo_og_image(url, timeout=15)
+            og = _tiktok_photo_og_image(url, timeout=12)
             if og:
                 candidates2 = [{"url": og}]
                 fallback_used = True
         if not candidates2:
-            prev = _tiktok_photo_preview_from_html(url, timeout=15)
+            prev = _tiktok_photo_preview_from_html(url, timeout=12)
             if prev:
                 candidates2 = [{"url": prev}]
                 fallback_used = True
+        if not candidates2:
+            try:
+                use_ytdlp_fallback = (
+                    os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_TRY_YTDLP_VIDEO_FALLBACK", "0") or ""
+                ).strip().lower()
+            except Exception:
+                use_ytdlp_fallback = "0"
+            if use_ytdlp_fallback not in ("0", "false", "no", "off"):
+                video_url = _tiktok_video_url_from_photo_url(url)
+                if video_url:
+                    info2, _, _ = _extract_info_with_cookie_fallback(video_url, opts, cookies_path)
+                    if info2:
+                        candidates2 = _collect_image_candidates(info2)
+                        fallback_used = bool(candidates2)
         out2: List[Dict[str, str]] = []
         for idx, c in enumerate(candidates2[: max(1, int(max_items))], start=1):
             nu = _normalize_tiktok_photo_image_url(str(c.get("url") or ""))
@@ -3290,6 +3511,7 @@ def download_with_ytdlp(
     if po_token:
         extractor_args["youtube"]["po_token"] = [po_token]
 
+    ydl_logger = _YTDLPCaptureLogger(max_lines=250)
     base_opts: Dict[str, Any] = {
         "format": fmt_str,
         "outtmpl": str(out_dir / base_tmpl),
@@ -3297,7 +3519,7 @@ def download_with_ytdlp(
         "quiet": True,
         "noprogress": True,
         "no_warnings": True,
-        "logger": _NullLogger(),
+        "logger": ydl_logger,
         "merge_output_format": merge_output_format,
         "postprocessors": postprocessors,
         "socket_timeout": 30,
@@ -3341,11 +3563,31 @@ def download_with_ytdlp(
             if attempt == 0:
                 _log_cookie_state("[YTDLP download]", url, ydl.params, cookies_path)
             try:
+                try:
+                    _apply_youtube_cookiefile(url, ydl.params)
+                except Exception:
+                    pass
+                try:
+                    _apply_youtube_ydl_tuning(url, ydl.params, kind, h)
+                except Exception:
+                    pass
                 ydl.download([url])
                 return None
             except DownloadError as e:
                 msg = str(e)
                 low = msg.lower()
+                if _is_youtube_url(url):
+                    tail = ""
+                    try:
+                        tail = ydl_logger.tail(80)
+                    except Exception:
+                        tail = ""
+                    try:
+                        print(f"[YOUTUBE] yt-dlp error: {msg}", flush=True)
+                        if tail:
+                            print(f"[YOUTUBE] yt-dlp log tail:\n{tail}", flush=True)
+                    except Exception:
+                        pass
 
                 if _is_auth_error(msg):
                     try:
@@ -3388,14 +3630,36 @@ def download_with_ytdlp(
                     wait_s = base_wait * (attempt + 1)  # 20s, 40s, 60s, ...
                     time.sleep(wait_s)
                     continue
+                if _is_youtube_url(url):
+                    tail = ""
+                    try:
+                        tail = ydl_logger.tail(80)
+                    except Exception:
+                        tail = ""
+                    if tail:
+                        return f"yt-dlp: {msg}\n{tail}"
                 return f"yt-dlp: {msg}"
             except Exception as e:
+                try:
+                    if _is_youtube_url(url):
+                        print(f"[YOUTUBE] Exception: {type(e).__name__}: {e}", flush=True)
+                        print(traceback.format_exc(), flush=True)
+                except Exception:
+                    pass
                 return f"erro: {type(e).__name__}: {e}"
         return "erro: tentativas esgotadas"
 
     with yt_dlp.YoutubeDL(base_opts) as ydl:
         for u in urls:
             url = _normalize_url(u)
+            if _is_youtube_url(url) and not _is_yt_playlist_url(url):
+                try:
+                    url2 = _normalize_youtube_single_video_url(url)
+                    if url2 and url2 != url:
+                        print(f"[YOUTUBE] Normalized URL: {url} -> {url2}", flush=True)
+                        url = url2
+                except Exception:
+                    pass
             try:
                 if _is_yt_playlist_url(url):
                     start = int(pl_start) if pl_start else 1

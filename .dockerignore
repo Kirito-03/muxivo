@@ -25,5 +25,8 @@ deploy/caddy_config/
 cookies_instagram.txt
 www.instagram.com_cookies.txt
 www.tiktok.com_cookies.txt
+youtube_cookies.txt
+www.youtube.com_cookies.txt
+*youtube*cookies*.txt
 *instagram*cookies*.txt
 *tiktok*cookies*.txt

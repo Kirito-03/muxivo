@@ -965,9 +965,17 @@ def api_detect():
 
             msg = None
             if is_photo and not candidates:
-                msg = "Se detectó un TikTok de imágenes, pero no se pudieron obtener las imágenes descargables en este entorno."
+                msg = (
+                    "TikTok de imágenes no expone la galería completa en este entorno del servidor. "
+                    "Solo se pudo obtener una vista previa. "
+                    "Para descargar la galería completa, usa modo local o cookies/navegador compatibles."
+                )
             elif is_photo and candidates and any(_is_fb(it.get("fallback")) for it in candidates if isinstance(it, dict)):
-                msg = "Se detectó un TikTok de imágenes. En este entorno solo se pudo obtener una imagen de vista previa."
+                msg = (
+                    "TikTok de imágenes no expone la galería completa en este entorno del servidor. "
+                    "Solo se pudo obtener una vista previa. "
+                    "Para descargar la galería completa, usa modo local o cookies/navegador compatibles."
+                )
 
             preview_files: Optional[List[Dict[str, str]]] = None
             if is_photo and candidates and any(_is_fb(it.get("fallback")) for it in candidates if isinstance(it, dict)):
