@@ -1131,9 +1131,9 @@ def _domains_from_urls(urls: List[str]) -> List[str]:
 
 
 def _client_order() -> List[str]:
-    # web funciona mejor con cookies + Deno JS runtime para resolver nsig/signature
-    # ios/android como fallback si web falla
-    return ["web", "ios", "android"]
+    # Dejar que yt-dlp auto-seleccione con Deno JS runtime
+    # web como primario; fallback automático a ios/android si web falla
+    return ["web"]
 
 
 def _is_yt_playlist_url(u: str) -> bool:
@@ -3902,6 +3902,17 @@ def download_with_ytdlp(
                     _apply_youtube_ydl_tuning(url, ydl.params, kind, h)
                 except Exception:
                     pass
+                # Log diagnóstico antes de descargar
+                if _is_youtube_url(url):
+                    try:
+                        print(
+                            f"[YOUTUBE] cookiefile={ydl.params.get('cookiefile', 'None')}\n"
+                            f"[YOUTUBE] format={ydl.params.get('format', 'N/A')}\n"
+                            f"[YOUTUBE] normalized_url={url}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 ydl.download([url])
                 return None
             except DownloadError as e:
