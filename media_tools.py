@@ -241,7 +241,7 @@ def _extract_info_with_cookie_fallback(
                 pass
         _log_cookie_state("[YTDLP extract]", url, opts, cookies_path)
         try:
-            _apply_youtube_cookiefile(url, opts)
+            _apply_platform_cookiefile(url, opts)
         except Exception:
             pass
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -402,10 +402,151 @@ def _is_youtube_url(url: str) -> bool:
     return host.endswith("youtube.com") or host.endswith("googlevideo.com") or "youtube.com" in host
 
 
+def _is_tiktok_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        host = ""
+    return host.endswith("tiktok.com") or "tiktok.com" in host
+
+
+def _is_instagram_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        host = ""
+    return host.endswith("instagram.com") or "instagram.com" in host
+
+
+def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
+    p = (platform or "").strip().lower()
+    if p == "youtube":
+        return [
+            os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "",
+            "/app/www.youtube.com_cookies.txt",
+            "www.youtube.com_cookies.txt",
+            "/app/youtube_cookies.txt",
+            "youtube_cookies.txt",
+        ]
+    if p == "tiktok":
+        return [
+            os.environ.get("MEDIA_DOWNLOADER_TIKTOK_COOKIES_FILE") or "",
+            "/app/www.tiktok.com_cookies.txt",
+            "www.tiktok.com_cookies.txt",
+        ]
+    if p == "instagram":
+        return [
+            os.environ.get("MEDIA_DOWNLOADER_INSTAGRAM_COOKIES_FILE") or "",
+            "/app/www.instagram.com_cookies.txt",
+            "www.instagram.com_cookies.txt",
+        ]
+    return []
+
+
+def _cookiefile_path_for_platform(platform: str) -> Optional[Path]:
+    for cand in _cookiefile_candidates_for_platform(platform):
+        try:
+            c = str(cand or "").strip()
+            if not c:
+                continue
+            p0 = Path(c).expanduser()
+            if not p0.is_absolute():
+                p0 = (Path(os.getcwd()) / p0).resolve()
+            p0 = p0.resolve()
+            usable, _ = _cookies_file_usable(p0)
+            if usable:
+                return p0
+        except Exception:
+            continue
+    return None
+
+
+def _platform_for_url(url: str) -> Optional[str]:
+    if _is_youtube_url(url):
+        return "youtube"
+    if _is_tiktok_url(url):
+        return "tiktok"
+    if _is_instagram_url(url):
+        return "instagram"
+    return None
+
+
+def _apply_platform_cookiefile(url: str, opts: Dict[str, Any]) -> None:
+    platform = _platform_for_url(url)
+    if not platform:
+        return
+
+    candidates = [c for c in _cookiefile_candidates_for_platform(platform) if str(c or "").strip()]
+    primary = candidates[0] if candidates else ""
+
+    exists = False
+    size = 0
+    file_label = ""
+    try:
+        if primary:
+            p_raw = Path(primary).expanduser()
+            if not p_raw.is_absolute():
+                p_raw = (Path(os.getcwd()) / p_raw).resolve()
+            p_raw = p_raw.resolve()
+            file_label = str(p_raw)
+            exists = bool(p_raw.exists() and p_raw.is_file())
+            size = int(p_raw.stat().st_size) if exists else 0
+        else:
+            file_label = f"/app/www.{platform}.com_cookies.txt"
+    except Exception:
+        exists = False
+        size = 0
+        file_label = f"/app/www.{platform}.com_cookies.txt"
+
+    p = _cookiefile_path_for_platform(platform)
+    using = bool(p)
+    if using and p:
+        opts["cookiefile"] = str(p)
+    else:
+        try:
+            if str(opts.get("cookiefile") or "").strip() in (
+                "/app/www.youtube.com_cookies.txt",
+                "/app/www.tiktok.com_cookies.txt",
+                "/app/www.instagram.com_cookies.txt",
+                "/app/youtube_cookies.txt",
+            ):
+                opts.pop("cookiefile", None)
+        except Exception:
+            pass
+
+    print(
+        f"[COOKIES] platform={platform} file={str(p) if p else file_label} exists={exists} size={int(size)}",
+        flush=True,
+    )
+
+    if platform == "youtube":
+        try:
+            ver = ""
+            try:
+                ver = str(getattr(yt_dlp, "__version__", "") or "")
+            except Exception:
+                ver = ""
+            if not ver:
+                try:
+                    import yt_dlp.version as _ydv  # type: ignore
+
+                    ver = str(getattr(_ydv, "__version__", "") or "")
+                except Exception:
+                    ver = ""
+            if ver:
+                print(f"[YOUTUBE] yt-dlp version: {ver}", flush=True)
+        except Exception:
+            pass
+        try:
+            print(f"[YOUTUBE] ffmpeg in PATH: {bool(shutil.which('ffmpeg'))}", flush=True)
+        except Exception:
+            pass
+
+
 def _youtube_cookiefile_path() -> Optional[Path]:
     raw = (os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "").strip()
     if not raw:
-        for cand in ("youtube_cookies.txt", "www.youtube.com_cookies.txt", "/app/youtube_cookies.txt"):
+        for cand in ("youtube_cookies.txt", "www.youtube.com_cookies.txt", "/app/www.youtube.com_cookies.txt", "/app/youtube_cookies.txt"):
             try:
                 p0 = Path(cand).expanduser()
                 if not p0.is_absolute():
@@ -433,59 +574,7 @@ def _youtube_cookiefile_path() -> Optional[Path]:
 def _apply_youtube_cookiefile(url: str, opts: Dict[str, Any]) -> None:
     if not _is_youtube_url(url):
         return
-    raw = (os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "").strip()
-    p_raw: Optional[Path] = None
-    exists = False
-    size: Optional[int] = None
-    try:
-        cand0 = raw or "www.youtube.com_cookies.txt"
-        if cand0:
-            p_raw = Path(cand0).expanduser()
-            if not p_raw.is_absolute():
-                p_raw = (Path(os.getcwd()) / p_raw).resolve()
-            p_raw = p_raw.resolve()
-            exists = bool(p_raw.exists() and p_raw.is_file())
-            size = int(p_raw.stat().st_size) if exists else None
-    except Exception:
-        p_raw = None
-        exists = False
-        size = None
-
-    p = _youtube_cookiefile_path()
-    using = bool(p)
-    if using and p:
-        opts["cookiefile"] = str(p)
-    else:
-        try:
-            opts.pop("cookiefile", None)
-        except Exception:
-            pass
-
-    print(f"[YOUTUBE] Using cookies: {using}", flush=True)
-    print(f"[YOUTUBE] Cookie file: {str(p) if p else '/app/youtube_cookies.txt'}", flush=True)
-    print(f"[YOUTUBE] Cookie file exists: {exists}", flush=True)
-    print(f"[YOUTUBE] Cookie size: {int(size) if isinstance(size, int) else 0}", flush=True)
-    try:
-        ver = ""
-        try:
-            ver = str(getattr(yt_dlp, "__version__", "") or "")
-        except Exception:
-            ver = ""
-        if not ver:
-            try:
-                import yt_dlp.version as _ydv  # type: ignore
-
-                ver = str(getattr(_ydv, "__version__", "") or "")
-            except Exception:
-                ver = ""
-        if ver:
-            print(f"[YOUTUBE] yt-dlp version: {ver}", flush=True)
-    except Exception:
-        pass
-    try:
-        print(f"[YOUTUBE] ffmpeg in PATH: {bool(shutil.which('ffmpeg'))}", flush=True)
-    except Exception:
-        pass
+    _apply_platform_cookiefile(url, opts)
 
 
 def _slugify(text: Optional[str], maxlen: int = 40) -> str:
@@ -3564,7 +3653,7 @@ def download_with_ytdlp(
                 _log_cookie_state("[YTDLP download]", url, ydl.params, cookies_path)
             try:
                 try:
-                    _apply_youtube_cookiefile(url, ydl.params)
+                    _apply_platform_cookiefile(url, ydl.params)
                 except Exception:
                     pass
                 try:
@@ -3595,8 +3684,15 @@ def download_with_ytdlp(
                     except Exception:
                         host = ""
                     if "instagram.com" in host:
-                        if cookiefile and not ydl.params.get("cookiefile"):
-                            ydl.params["cookiefile"] = cookiefile
+                        if not ydl.params.get("cookiefile"):
+                            try:
+                                p_inst = _cookiefile_path_for_platform("instagram")
+                            except Exception:
+                                p_inst = None
+                            if p_inst:
+                                ydl.params["cookiefile"] = str(p_inst)
+                            elif cookiefile:
+                                ydl.params["cookiefile"] = cookiefile
                             time.sleep(1.0)
                             continue
                         if not cookiefile:

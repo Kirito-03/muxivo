@@ -28,6 +28,9 @@ services:
       - media_served:/app/served_files
       - ./www.instagram.com_cookies.txt:/app/cookies/www.instagram.com_cookies.txt:ro
       - ./www.tiktok.com_cookies.txt:/app/cookies/www.tiktok.com_cookies.txt:ro
+      - ./www.youtube.com_cookies.txt:/app/www.youtube.com_cookies.txt:ro
+      - ./www.tiktok.com_cookies.txt:/app/www.tiktok.com_cookies.txt:ro
+      - ./www.instagram.com_cookies.txt:/app/www.instagram.com_cookies.txt:ro
       - ./www.youtube.com_cookies.txt:/app/youtube_cookies.txt:ro
 
 volumes:
