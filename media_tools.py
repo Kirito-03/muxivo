@@ -1857,6 +1857,58 @@ def _tiktok_photo_preview_from_html(url: str, timeout: int = 15) -> Optional[str
     return u
 
 
+def _tiktok_photo_worker_extract(url: str, timeout: int = 20) -> List[Dict[str, str]]:
+    base = (os.environ.get("TIKTOK_PHOTO_WORKER_URL") or "").strip()
+    if not base:
+        return []
+    token = (os.environ.get("TIKTOK_PHOTO_WORKER_TOKEN") or "").strip()
+    try:
+        p = urlparse(base)
+        if (p.scheme or "").lower() not in ("http", "https"):
+            return []
+    except Exception:
+        return []
+
+    endpoint = base.rstrip("/") + "/extract"
+    payload = json.dumps({"url": str(url or "").strip()}).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    print(f"[TIKTOK-PHOTO-WORKER] request: {endpoint}", flush=True)
+    try:
+        req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=int(timeout), context=ctx) as resp:
+            raw = resp.read(2_000_000)
+        data = json.loads(raw.decode("utf-8", errors="ignore") or "{}")
+    except Exception as e:
+        print(f"[TIKTOK-PHOTO-WORKER] error: {type(e).__name__}", flush=True)
+        return []
+
+    if not isinstance(data, dict) or not data.get("ok"):
+        print("[TIKTOK-PHOTO-WORKER] response not ok", flush=True)
+        return []
+
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        print("[TIKTOK-PHOTO-WORKER] items=0", flush=True)
+        return []
+
+    out: List[Dict[str, str]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        u = str(it.get("url") or "").strip()
+        if not u.startswith(("http://", "https://")):
+            continue
+        label = str(it.get("label") or "").strip()
+        out.append({"url": u, "label": label})
+
+    print(f"[TIKTOK-PHOTO-WORKER] items={len(out)}", flush=True)
+    return out
+
+
 def _tiktok_photo_candidates_playwright(
     url: str,
     timeout: int = 25,
@@ -3451,6 +3503,7 @@ def probe_image_candidates(
 
     if "tiktok.com" in host and "/photo/" in path:
         fallback_used = False
+        worker_used = False
         # Resolver cookies TikTok específicas para photo probe
         tiktok_ck = None
         try:
@@ -3473,6 +3526,17 @@ def probe_image_candidates(
                 candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
         except Exception:
             candidates2 = []
+        if not candidates2:
+            try:
+                wk_items = _tiktok_photo_worker_extract(url, timeout=20)
+            except Exception:
+                wk_items = []
+            if wk_items:
+                candidates2 = [{"url": str(it.get("url") or "").strip(), "label": str(it.get("label") or "").strip()} for it in wk_items]
+                worker_used = True
+                print(f"[TIKTOK-PHOTO] worker ok items={len(candidates2)}", flush=True)
+            else:
+                print("[TIKTOK-PHOTO] worker unavailable or empty -> fallback preview", flush=True)
         if not candidates2:
             og = _tiktok_photo_og_image(url, timeout=12)
             if og:
@@ -3503,7 +3567,11 @@ def probe_image_candidates(
             out2.append(
                 {
                     "url": nu,
-                    "label": (f"PREVIEW {idx}" if fallback_used else f"IMAGE {idx}"),
+                    "label": (
+                        (f"PREVIEW {idx}" if fallback_used else f"IMAGE {idx}")
+                        if not str(c.get("label") or "").strip()
+                        else str(c.get("label") or "").strip()
+                    ),
                     "fallback": ("1" if fallback_used else "0"),
                 }
             )
