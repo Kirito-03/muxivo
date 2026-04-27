@@ -215,17 +215,25 @@ def _should_log_cookies(url: str) -> bool:
 def _log_cookie_state(prefix: str, url: str, opts: Dict[str, Any], cookies_path: Optional[Path]) -> None:
     if not _should_log_cookies(url):
         return
-    usable, size = _cookies_file_usable(cookies_path)
+    chosen: Optional[Path] = None
+    try:
+        cf = str(opts.get("cookiefile") or "").strip()
+        if cf:
+            chosen = Path(cf)
+    except Exception:
+        chosen = None
+    chosen = chosen or cookies_path
+    usable, size = _cookies_file_usable(chosen)
     try:
         cookiefile_in_opts = bool(opts.get("cookiefile"))
     except Exception:
         cookiefile_in_opts = False
-    using = bool(usable and cookies_path)
+    using = bool(usable and chosen)
     print(f"USING COOKIES: {using}", flush=True)
-    print(f"COOKIE FILE: {str(cookies_path) if using else 'None'}", flush=True)
+    print(f"COOKIE FILE: {str(chosen) if using else 'None'}", flush=True)
     print(
         f"{prefix} USING_COOKIES_PATH={bool(cookies_path)} COOKIES_USABLE={usable} "
-        f"COOKIE_SIZE={size if size is not None else 'NA'} COOKIE_FILE={str(cookies_path) if cookies_path else 'None'} "
+        f"COOKIE_SIZE={size if size is not None else 'NA'} COOKIE_FILE={str(chosen) if chosen else 'None'} "
         f"YTDLP_COOKIEFILE_IN_OPTS={cookiefile_in_opts}",
         flush=True,
     )
@@ -251,7 +259,6 @@ def _extract_info_with_cookie_fallback(
                 opts["noplaylist"] = True
             except Exception:
                 pass
-        _log_cookie_state("[YTDLP extract]", url, opts, cookies_path)
         last_exc: Optional[Exception] = None
         for _ in range(3):
             try:
@@ -259,6 +266,7 @@ def _extract_info_with_cookie_fallback(
                     _apply_platform_cookiefile(url, opts)
                 except Exception:
                     pass
+                _log_cookie_state("[YTDLP extract]", url, opts, cookies_path)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
                 return info, used_cookies, auth_failed
@@ -320,13 +328,17 @@ def _extract_info_with_cookie_fallback(
             auth_failed = True
         if cookies_path and auth_failed and "cookiefile" not in opts:
             try:
-                usable, _ = _cookies_file_usable(cookies_path)
-                if not usable:
-                    _log_cookie_state("[YTDLP extract] COOKIEFILE_UNUSABLE", url, opts, cookies_path)
+                plat = _platform_for_url(url) or ""
+                plat_path = get_cookiefile_for_platform(plat) if plat else None
+                usable, _ = _cookies_file_usable(plat_path)
+                if not usable or not plat_path:
+                    _log_cookie_state("[YTDLP extract] COOKIEFILE_UNUSABLE", url, opts, plat_path)
                     return None, used_cookies, auth_failed
                 opts2 = dict(opts)
-                opts2["cookiefile"] = str(cookies_path)
-                _log_cookie_state("[YTDLP extract] RETRY_WITH_COOKIEFILE", url, opts2, cookies_path)
+                opts2["cookiefile"] = str(plat_path)
+                if plat == "instagram":
+                    print(f"[INSTAGRAM] cookiefile={str(plat_path)}", flush=True)
+                _log_cookie_state("[YTDLP extract] RETRY_WITH_COOKIEFILE", url, opts2, plat_path)
                 with yt_dlp.YoutubeDL(opts2) as ydl:
                     info = ydl.extract_info(url, download=False)
                 return info, True, auth_failed
@@ -731,12 +743,16 @@ def _apply_platform_cookiefile(url: str, opts: Dict[str, Any]) -> None:
     selected = get_cookiefile_for_platform(platform)
     if selected:
         opts["cookiefile"] = str(selected)
+        if platform == "instagram":
+            print(f"[INSTAGRAM] cookiefile={str(selected)}", flush=True)
     else:
         try:
             opts.pop("cookiefile", None)
         except Exception:
             pass
         print(f"[COOKIES] platform={platform} selected=None exists=False size=0", flush=True)
+        if platform == "instagram":
+            print("[INSTAGRAM] cookiefile=None", flush=True)
 
     if platform == "youtube":
         try:
@@ -3578,6 +3594,11 @@ def probe_image_candidates(
         return [c for c in out2 if c.get("url")]
 
     is_instagram_post = "instagram.com" in host and "/p/" in path and "/reel/" not in path
+    if "instagram.com" in host:
+        try:
+            cookies_path = get_cookiefile_for_platform("instagram")
+        except Exception:
+            cookies_path = cookies_path
     info, _, _ = _extract_info_with_cookie_fallback(url, opts, cookies_path)
     if not info:
         if is_instagram_post:
@@ -3596,7 +3617,10 @@ def probe_image_candidates(
 
     out: List[Dict[str, str]] = []
     for idx, c in enumerate(candidates[: max(1, int(max_items))], start=1):
-        out.append({"url": str(c.get("url") or ""), "label": f"IMAGE {idx}"})
+        u = str(c.get("url") or "").strip()
+        if not u:
+            continue
+        out.append({"url": u, "thumb": u, "label": f"IMAGE {idx}", "kind": "image"})
     return [c for c in out if c.get("url")]
 
 
@@ -4129,13 +4153,12 @@ def download_with_ytdlp(
                     if "instagram.com" in host:
                         if not ydl.params.get("cookiefile"):
                             try:
-                                p_inst = _cookiefile_path_for_platform("instagram")
+                                p_inst = get_cookiefile_for_platform("instagram")
                             except Exception:
                                 p_inst = None
                             if p_inst:
                                 ydl.params["cookiefile"] = str(p_inst)
-                            elif cookiefile:
-                                ydl.params["cookiefile"] = cookiefile
+                                print(f"[INSTAGRAM] cookiefile={str(p_inst)}", flush=True)
                             time.sleep(1.0)
                             continue
                         if not cookiefile:

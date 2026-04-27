@@ -864,13 +864,20 @@ def api_detect():
             u = str(it.get("url") or "").strip()
             if not u:
                 continue
-            items_list.append(
-                {
-                    "url": u,
-                    "label": str(it.get("label") or "").strip() or "IMAGE",
-                    "fallback": bool(str(it.get("fallback") or "").strip() in ("1", "true", "yes")),
-                }
-            )
+            thumb = str(it.get("thumb") or "").strip()
+            kind0 = str(it.get("kind") or "").strip().lower()
+            if kind0 and kind0 not in ("image", "video", "audio", "file"):
+                kind0 = ""
+            row: Dict[str, Any] = {
+                "url": u,
+                "label": str(it.get("label") or "").strip() or "IMAGE",
+                "fallback": bool(str(it.get("fallback") or "").strip() in ("1", "true", "yes")),
+            }
+            if thumb:
+                row["thumb"] = thumb
+            if kind0:
+                row["kind"] = kind0
+            items_list.append(row)  # type: ignore[arg-type]
 
         t: Optional[str] = None
         if detected_kind == "image":
@@ -1143,7 +1150,13 @@ def api_thumb():
         abort(502)
 
     mt = mimetypes.guess_type(str(cached))[0] or "application/octet-stream"
-    return send_file(cached, mimetype=mt, conditional=True)
+    resp = send_file(cached, mimetype=mt, conditional=True)
+    try:
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Pragma"] = "no-cache"
+    except Exception:
+        pass
+    return resp
 
 
 @app.post("/api/download")
