@@ -50,6 +50,17 @@ let detectSeq = 0
 let dotsTimer = null
 let dotsStep = 0
 
+// ── Session ID for per-device archive ──
+function getSessionId() {
+  let sid = localStorage.getItem("muxivo_session_id")
+  if (!sid) {
+    sid = crypto.randomUUID()
+    localStorage.setItem("muxivo_session_id", sid)
+  }
+  return sid
+}
+const SESSION_ID = getSessionId()
+
 const DEFAULTS = {
   audio: {
     format_choices: ["mp3", "m4a", "opus", "ogg", "wav", "flac"],
@@ -311,7 +322,11 @@ async function fetchOptions() {
   const res = await fetch(`/api/options?${qs.toString()}`, { headers: { Accept: "application/json" } })
   if (!res.ok) throw new Error("options_failed")
   const data = await res.json()
-  applyOptions(data)
+  if (data && data.detected_from_source) {
+    applyOptions(data)
+  } else {
+    applyOptions(data)
+  }
 }
 
 function validUrlLines(text) {
@@ -673,7 +688,8 @@ function renderArchiveView() {
 
 async function loadHistory() {
   try {
-    const res = await fetch("/api/history", { headers: { Accept: "application/json" } })
+    const qs = new URLSearchParams({ session_id: SESSION_ID })
+    const res = await fetch(`/api/history?${qs.toString()}`, { headers: { Accept: "application/json" } })
     if (!res.ok) return
     const data = await res.json().catch(() => ({}))
     historyItems = Array.isArray(data.items) ? data.items : []
@@ -760,7 +776,7 @@ async function startDownload() {
   setStatus("Descargando...", undefined)
 
   try {
-    const payload = { raw_input: raw, kind, format: formatSelect.value, detail: qualitySelect.value }
+    const payload = { raw_input: raw, kind, format: formatSelect.value, detail: qualitySelect.value, session_id: SESSION_ID }
     if (kind === "image" && Array.isArray(currentImageCandidates) && currentImageCandidates.length > 0 && Array.isArray(selectedImageUrls)) {
       payload.image_urls = selectedImageUrls.slice(0, 200)
     }

@@ -128,6 +128,7 @@ def _cookies_path() -> Optional[Path]:
         (
             p
             for p in [
+                Path("/app/cookies/tiktok/current.txt").resolve(),
                 (ROOT_DIR / "www.tiktok.com_cookies.txt").resolve(),
                 (ROOT_DIR / "tiktok_cookies.txt").resolve(),
                 (ROOT_DIR / "cookies" / "www.tiktok.com_cookies.txt").resolve(),
@@ -189,15 +190,32 @@ def _cleanup_download_limits() -> None:
         total_size -= dir_size
 
 
-def _history_path() -> Path:
+def _history_dir() -> Path:
+    d = SERVED_DIR / "history"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _history_path(session_id: str = "") -> Path:
+    sid = _sanitize_session_id(session_id)
+    if sid:
+        return _history_dir() / f"history_{sid}.json"
     return SERVED_DIR / "history.json"
 
 
-def _append_history(entry: dict) -> None:
+def _sanitize_session_id(session_id: str) -> str:
+    raw = (session_id or "").strip()
+    if not raw:
+        return ""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "", raw)
+    return safe[:64]
+
+
+def _append_history(entry: dict, session_id: str = "") -> None:
     if HISTORY_MAX_ITEMS <= 0:
         return
     with _HISTORY_LOCK:
-        p = _history_path()
+        p = _history_path(session_id)
         try:
             data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
             if not isinstance(data, list):
@@ -738,20 +756,24 @@ def api_options():
     if not detected:
         return jsonify(DEFAULTS[requested_kind])
 
-    return jsonify(
-        {
-            "format_choices": detected.get("format_choices") or DEFAULTS[requested_kind]["format_choices"],
-            "format_value": detected.get("format_value") or DEFAULTS[requested_kind]["format_value"],
-            "detail_choices": detected.get("detail_choices") or DEFAULTS[requested_kind]["detail_choices"],
-            "detail_value": detected.get("detail_value") or DEFAULTS[requested_kind]["detail_value"],
-        }
-    )
+    result = {
+        "format_choices": detected.get("format_choices") or DEFAULTS[requested_kind]["format_choices"],
+        "format_value": detected.get("format_value") or DEFAULTS[requested_kind]["format_value"],
+        "detail_choices": detected.get("detail_choices") or DEFAULTS[requested_kind]["detail_choices"],
+        "detail_value": detected.get("detail_value") or DEFAULTS[requested_kind]["detail_value"],
+        "detected_from_source": True,
+    }
+    return jsonify(result)
 
 
 @app.get("/api/history")
 def api_history():
+    session_id = _sanitize_session_id(request.args.get("session_id", "") or "")
+    if not session_id:
+        return jsonify({"items": []})
+
     try:
-        p = _history_path()
+        p = _history_path(session_id)
         data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
         if not isinstance(data, list):
             data = []
@@ -1129,6 +1151,7 @@ def api_download():
     payload = request.get_json(silent=True) or {}
     raw_input = (payload.get("raw_input") or "").strip()
     requested_kind = (payload.get("kind") or "video").strip().lower()
+    session_id = _sanitize_session_id(payload.get("session_id") or "")
     fmt = (payload.get("format") or "").strip().lower()
     detail = (payload.get("detail") or "").strip()
     image_urls = payload.get("image_urls")
@@ -1280,7 +1303,7 @@ def api_download():
         audio_format = fmt or DEFAULTS["audio"]["format_value"]
         abr_kbps = _safe_int(detail, 192)
         container = fmt or DEFAULTS["video"]["format_value"]
-        max_height = _safe_int(detail, 720)
+        max_height = _safe_int(detail, 720) if detail.lower() != "best" else 9999
 
         _log.info(
             "download_start kind=%s urls=%s cookies=%s",
@@ -1363,7 +1386,8 @@ def api_download():
             "zip": str(zip_path) if zip_path else None,
             "zip_relpath": _path_to_relstr(Path(zip_path)) if zip_path else None,
             "files": history_files,
-        }
+        },
+        session_id=session_id,
     )
 
     failures_out = [{"url": u, "reason": r} for (u, r) in (failures or [])]

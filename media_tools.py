@@ -1867,6 +1867,51 @@ def _tiktok_photo_candidates_playwright(
     except Exception:
         return [], None, None
 
+    # --- Resolver cookies TikTok específicas ---
+    tiktok_cookies_path: Optional[Path] = None
+    try:
+        # Prioridad 1: /app/cookies/tiktok/current.txt via plataforma
+        tiktok_cookies_path = get_cookiefile_for_platform("tiktok")
+    except Exception:
+        tiktok_cookies_path = None
+    if not tiktok_cookies_path and cookies_path:
+        # Fallback: usar cookies_path genérico si contiene tiktok.com
+        try:
+            raw_text = cookies_path.read_text(encoding="utf-8", errors="ignore")
+            if "tiktok.com" in raw_text.lower():
+                tiktok_cookies_path = cookies_path
+        except Exception:
+            pass
+
+    # Validar cookies TikTok: mínimo 5KB y contiene dominio tiktok.com
+    _tk_usable = False
+    _tk_size: Optional[int] = None
+    _tk_has_domain = False
+    if tiktok_cookies_path:
+        try:
+            _tk_usable_raw, _tk_size = _cookies_file_usable_min(tiktok_cookies_path, 5 * 1024)
+            if _tk_usable_raw:
+                _raw = tiktok_cookies_path.read_text(encoding="utf-8", errors="ignore")
+                _tk_has_domain = "tiktok.com" in _raw.lower()
+                _tk_usable = _tk_has_domain
+            if not _tk_usable:
+                tiktok_cookies_path = None
+        except Exception:
+            _tk_usable = False
+            tiktok_cookies_path = None
+
+    try:
+        print(
+            f"[TIKTOK-PHOTO-PW] cookies_path={str(tiktok_cookies_path) if tiktok_cookies_path else 'None'}",
+            flush=True,
+        )
+        print(
+            f"[TIKTOK-PHOTO-PW] cookies_usable={_tk_usable} cookie_size={_tk_size if _tk_size is not None else 'NA'} has_tiktok_domain={_tk_has_domain}",
+            flush=True,
+        )
+    except Exception:
+        pass
+
     debug = (os.environ.get("MEDIA_DOWNLOADER_DEBUG_TIKTOK_PHOTO", "1") or "").strip().lower() not in (
         "0",
         "false",
@@ -2260,14 +2305,14 @@ def _tiktok_photo_candidates_playwright(
                 viewport={"width": 1200, "height": 900},
             )
 
-            usable, size = _cookies_file_usable(cookies_path)
-            _dbg(f"Entrando. url={url} timeout={timeout}s cookies_usable={usable} cookie_size={size if size is not None else 'NA'}")
+            _dbg(f"Entrando. url={url} timeout={timeout}s cookies_usable={_tk_usable} cookie_size={_tk_size if _tk_size is not None else 'NA'}")
 
-            if cookies_path and cookies_path.exists() and cookies_path.is_file():
+            _cookies_added = 0
+            if tiktok_cookies_path and tiktok_cookies_path.exists() and tiktok_cookies_path.is_file():
                 try:
                     cookies: List[Dict[str, Any]] = []
                     tiktok_cookie_lines = 0
-                    for line in cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    for line in tiktok_cookies_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                         t = (line or "").strip()
                         if not t or t.startswith("#"):
                             continue
@@ -2297,10 +2342,19 @@ def _tiktok_photo_candidates_playwright(
                         cookies.append(ck)
                     if cookies:
                         context.add_cookies(cookies)
-                    _dbg(f"Cookies Playwright: tiktok_lines={tiktok_cookie_lines} added={len(cookies)}")
+                    _cookies_added = len(cookies)
+                    _dbg(f"Cookies Playwright: tiktok_lines={tiktok_cookie_lines} added={_cookies_added}")
                 except Exception:
                     _dbg("Cookies Playwright: fallo al cargar/aplicar cookies (silenciado).")
                     pass
+
+            try:
+                print(
+                    f"[TIKTOK-PHOTO-PW] cookies_added={_cookies_added}",
+                    flush=True,
+                )
+            except Exception:
+                pass
 
             page = context.new_page()
 
@@ -2565,8 +2619,17 @@ def _tiktok_photo_candidates_playwright(
                 and int(stats.get("json") or 0) == 0
             )
             if fast_fail:
-                _dbg("Fast-fail: entorno restringido (dom=0 net=0 json=0) -> saltando carrusel.")
+                _dbg("Fast-fail: entorno restringido (dom=0 net=0 json=0) -> saltando carrusel. No esperar 60s.")
                 max_steps = 0
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                return [], None, None
 
             carousel_selectors = [
                 'button[aria-label*="Next" i]',
@@ -3079,17 +3142,22 @@ def probe_download_options(
 
     formats = info.get("formats") or []
     if kind == "video":
-        heights = sorted(
-            {
-                int(fmt.get("height"))
-                for fmt in formats
-                if fmt.get("height") and fmt.get("vcodec") not in (None, "none")
-            },
-            reverse=True,
-        )
-        choices = [str(h) for h in heights if h > 0]
+        STANDARD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
+        raw_heights = {
+            int(fmt.get("height"))
+            for fmt in formats
+            if fmt.get("height") and fmt.get("vcodec") not in (None, "none")
+        }
+        mapped: set = set()
+        for h in raw_heights:
+            if h <= 0:
+                continue
+            best = min(STANDARD_HEIGHTS, key=lambda s: abs(s - h))
+            if abs(best - h) <= max(30, best * 0.15):
+                mapped.add(best)
+        choices = [str(h) for h in sorted(mapped, reverse=True)]
         if not choices:
-            choices = ["360", "480", "720", "1080"]
+            choices = ["best"]
         return {
             "detail_choices": choices,
             "detail_value": choices[0],
@@ -3383,11 +3451,24 @@ def probe_image_candidates(
 
     if "tiktok.com" in host and "/photo/" in path:
         fallback_used = False
+        # Resolver cookies TikTok específicas para photo probe
+        tiktok_ck = None
+        try:
+            tiktok_ck = get_cookiefile_for_platform("tiktok")
+        except Exception:
+            tiktok_ck = None
+        if not tiktok_ck and cookies_path:
+            try:
+                _raw_txt = cookies_path.read_text(encoding="utf-8", errors="ignore")
+                if "tiktok.com" in _raw_txt.lower():
+                    tiktok_ck = cookies_path
+            except Exception:
+                pass
         try:
             use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
             candidates2 = []
             if use_pw not in ("0", "false", "no", "off"):
-                candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=12, cookies_path=cookies_path)
+                candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=15, cookies_path=tiktok_ck)
             if not candidates2:
                 candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
         except Exception:
