@@ -367,16 +367,20 @@ function renderImagePicker(candidates) {
     return
   }
 
-  const proxied = (u) => {
+  const proxied = (u, index) => {
     const s = String(u || "").trim()
     if (!s) return ""
     if (s.startsWith("/files/")) return s
     const qs = new URLSearchParams({ url: s })
     if (currentDetectRef) qs.set("ref", currentDetectRef)
+    if (typeof index === "number" && Number.isFinite(index)) {
+      qs.set("idx", String(index))
+      qs.set("ts", String(Date.now()))
+    }
     return `/api/thumb?${qs.toString()}`
   }
 
-  try { console.log("gallery items", (Array.isArray(list) ? list : []).map((x) => (x && (x.url || x.thumb)) || "")) } catch {}
+  console.log("gallery render", list.map((x, i) => ({ i, url: x && x.url, thumb: x && x.thumb })))
 
   const nameFor = (label, url) => {
     const rawLabel = String(label || "image").trim() || "image"
@@ -416,7 +420,7 @@ function renderImagePicker(candidates) {
     const url = String(u || "").trim()
     if (!url) return
     currentPreviewUrl = url
-    renderPlayback([{ name: nameFor(label, url), url: proxied(url), kind: "image" }])
+    renderPlayback([{ name: nameFor(label, url), url: proxied(url, 0), kind: "image" }])
     if (playbackAcc) playbackAcc.open = true
   }
 
@@ -436,25 +440,30 @@ function renderImagePicker(candidates) {
     return
   }
 
+  let rowIndex = 0
   for (const c of list) {
     const url = c && c.url ? String(c.url) : ""
     if (!url) continue
     const label = c && c.label ? String(c.label) : "IMAGE"
     const thumbUrl = c && c.thumb ? String(c.thumb) : url
+    rowIndex += 1
 
     const li = document.createElement("li")
     li.className = "pick-item"
+    li.dataset.index = String(rowIndex)
 
     const cb = document.createElement("input")
     cb.type = "checkbox"
     cb.checked = true
     cb.dataset.url = url
+    cb.dataset.index = String(rowIndex)
 
     const thumb = document.createElement("img")
     thumb.className = "pick-thumb"
     thumb.alt = label
     thumb.loading = "lazy"
-    thumb.src = proxied(thumbUrl)
+    thumb.src = proxied(thumbUrl, rowIndex)
+    thumb.dataset.index = String(rowIndex)
 
     const name = document.createElement("span")
     name.className = "pick-name"

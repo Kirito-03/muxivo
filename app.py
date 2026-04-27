@@ -383,7 +383,8 @@ def _cache_preview_image(url: str, *, referer: Optional[str] = None) -> Optional
     if ext not in IMAGE_EXTS:
         ext = ""
 
-    key = hashlib.sha1(u.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    ref_key = (referer or "").strip()
+    key = hashlib.sha1((u + "|" + ref_key).encode("utf-8", errors="ignore")).hexdigest()[:32]
     dst = (PREVIEW_DIR / f"preview_{key}{ext or '.jpg'}").resolve()
     try:
         if dst.exists() and dst.is_file() and dst.stat().st_size > 0:
@@ -904,6 +905,13 @@ def api_detect():
             "items": items_list,
             "disable_modes": disable_modes,
         }
+        try:
+            if platform == "instagram" and t == "GALLERY":
+                cnt = len(items_list)
+                uniq = len({str(x.get("url") or "").strip() for x in items_list if isinstance(x, dict)})
+                print(f"[INSTAGRAM] gallery items count={cnt} unique_urls={uniq}", flush=True)
+        except Exception:
+            pass
         if isinstance(files, list):
             safe_files: List[Dict[str, str]] = []
             for f in files:
@@ -1152,8 +1160,9 @@ def api_thumb():
     mt = mimetypes.guess_type(str(cached))[0] or "application/octet-stream"
     resp = send_file(cached, mimetype=mt, conditional=True)
     try:
-        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
     except Exception:
         pass
     return resp
@@ -1201,6 +1210,13 @@ def api_download():
             return jsonify({"message": "Selecciona al menos una imagen.", "tone": "warning"}), 400
         selected_image_urls = remote if remote else []
         selected_local_paths = local or None
+        try:
+            first_url = _filter_valid_urls(raw_input).splitlines()[0].strip()
+            if first_url and "instagram.com" in first_url.lower():
+                uniq = len({str(u or "").strip() for u in (selected_image_urls or []) if str(u or "").strip()})
+                print(f"[INSTAGRAM] download selected_images={len(selected_image_urls or [])} unique_urls={uniq}", flush=True)
+        except Exception:
+            pass
 
     _cleanup_old_sessions()
 
