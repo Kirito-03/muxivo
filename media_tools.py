@@ -3474,6 +3474,48 @@ def probe_media_capabilities(
     }
 
 
+def _tiktok_photo_worker_extract(url: str, timeout: int = 20) -> List[Dict[str, Any]]:
+    """Call the external TikTok photo worker (Termux) to extract gallery images.
+
+    Reads TIKTOK_PHOTO_WORKER_URL from environment. If not set, returns [].
+    POST /extract with {"url": "<url>"} and optional Bearer token from
+    TIKTOK_PHOTO_WORKER_TOKEN.
+    Returns the 'items' list from the worker response, or [] on any failure.
+    """
+    worker_base = (os.environ.get("TIKTOK_PHOTO_WORKER_URL") or "").strip().rstrip("/")
+    if not worker_base:
+        return []
+
+    endpoint = f"{worker_base}/extract"
+    print(f"[TIKTOK-PHOTO] calling worker={worker_base}", flush=True)
+
+    payload = json.dumps({"url": url}).encode("utf-8")
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    token = (os.environ.get("TIKTOK_PHOTO_WORKER_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=max(5, int(timeout))) as resp:
+            body = resp.read()
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            print("[TIKTOK-PHOTO] worker returned non-dict response", flush=True)
+            return []
+        if not data.get("ok"):
+            print(f"[TIKTOK-PHOTO] worker ok=false msg={data.get('message', '')}", flush=True)
+            return []
+        items = data.get("items") or []
+        if not isinstance(items, list):
+            items = []
+        print(f"[TIKTOK-PHOTO] worker items={len(items)}", flush=True)
+        return items
+    except Exception as exc:
+        print(f"[TIKTOK-PHOTO] worker unavailable or empty -> fallback preview ({exc})", flush=True)
+        return []
+
+
 def probe_image_candidates(
     raw_input: str,
     proxy_url: Optional[str] = None,
