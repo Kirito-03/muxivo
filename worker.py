@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
 """
-worker.py — TikTok Photo Gallery Extractor (Termux)
-Flask worker that extracts real gallery images from TikTok /photo/ posts.
+worker.py — Muxivo Media Worker (Termux)
+Flask worker that extracts gallery images and downloads media via yt-dlp.
 
 Usage:
-    pip install flask requests
+    pip install flask requests yt-dlp
     python worker.py
 
-Endpoint:
-    POST /extract  {"url": "https://vt.tiktok.com/..."}
+Endpoints:
+    POST /extract   Extract gallery images from TikTok /photo/ URL
+    POST /download  Download video/audio via yt-dlp (YouTube, Instagram, etc.)
+    GET  /files/<f>  Serve downloaded files
+    GET  /health     Health check
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import time
+import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs, urlencode, urlunparse
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory, abort
 
 app = Flask(__name__)
 
@@ -516,7 +524,7 @@ def extract_gallery(input_url: str) -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Flask routes
+# Flask routes — /extract (TikTok photos)
 # ---------------------------------------------------------------------------
 
 
@@ -535,7 +543,6 @@ def handle_extract():
         items = extract_gallery(url)
     except Exception as exc:
         print(f"[WORKER] ERROR: {exc}", flush=True)
-        import traceback
         traceback.print_exc()
         return jsonify(
             {
@@ -556,9 +563,368 @@ def handle_extract():
     )
 
 
+# ---------------------------------------------------------------------------
+# Download config
+# ---------------------------------------------------------------------------
+WORKER_DOWNLOADS_DIR = Path("worker_downloads")
+WORKER_DOWNLOADS_DIR.mkdir(exist_ok=True)
+DOWNLOAD_TIMEOUT = 120  # max seconds for a single yt-dlp download
+MAX_DOWNLOAD_FILES = 50  # max files kept before cleanup
+
+# YouTube query params to strip for normalization
+_YT_STRIP_PARAMS = {
+    "list", "start_radio", "rv", "index", "si",
+    "feature", "pp", "ab_channel",
+}
+
+
+def _normalize_youtube_url(url: str) -> str:
+    """Strip playlist/radio params from YouTube URLs to get a clean single-video URL."""
+    try:
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+    except Exception:
+        return url
+
+    # Only touch YouTube domains
+    if "youtube.com" not in host and "youtu.be" not in host:
+        return url
+
+    # youtu.be/VIDEO_ID -> https://www.youtube.com/watch?v=VIDEO_ID
+    if "youtu.be" in host:
+        vid = (p.path or "").strip("/").split("/")[0]
+        if vid:
+            return f"https://www.youtube.com/watch?v={vid}"
+        return url
+
+    # youtube.com/watch?v=... -> strip junk params
+    qs = parse_qs(p.query, keep_blank_values=False)
+    video_id = qs.get("v", [None])[0]
+    if not video_id:
+        return url
+
+    cleaned = {k: v[0] for k, v in qs.items() if k not in _YT_STRIP_PARAMS and v}
+    cleaned["v"] = video_id
+    new_query = urlencode(cleaned)
+    normalized = urlunparse((p.scheme, p.netloc, p.path, "", new_query, ""))
+
+    return normalized
+
+
+def _sanitize_filename(name: str) -> str:
+    """Remove dangerous characters from filenames."""
+    name = str(name or "download").strip()
+    # Remove path separators and null bytes
+    name = name.replace("/", "_").replace("\\", "_").replace("\x00", "")
+    name = re.sub(r'[<>:"|?*]', "_", name)
+    # Collapse whitespace
+    name = re.sub(r"\s+", " ", name).strip()
+    # Limit length
+    if len(name) > 200:
+        stem, _, ext = name.rpartition(".")
+        if ext and len(ext) <= 5:
+            name = stem[:190] + "." + ext
+        else:
+            name = name[:200]
+    return name or "download"
+
+
+def _cleanup_old_downloads(keep: int = MAX_DOWNLOAD_FILES) -> None:
+    """Remove oldest files if download dir exceeds limit."""
+    try:
+        files = sorted(
+            [f for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()],
+            key=lambda f: f.stat().st_mtime,
+        )
+        if len(files) > keep:
+            for f in files[: len(files) - keep]:
+                try:
+                    f.unlink()
+                    print(f"[WORKER] cleanup: removed {f.name}", flush=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _detect_kind_from_path(p: Path) -> str:
+    """Detect file kind from extension."""
+    ext = (p.suffix or "").lower().lstrip(".")
+    if ext in ("mp4", "mkv", "webm", "avi", "mov", "flv", "ts"):
+        return "video"
+    if ext in ("mp3", "m4a", "ogg", "opus", "wav", "flac", "aac", "wma"):
+        return "audio"
+    if ext in ("jpg", "jpeg", "png", "webp", "gif", "bmp", "avif"):
+        return "image"
+    return "file"
+
+
+def _get_worker_file_url(filename: str) -> str:
+    """Build the full URL for a worker file.
+    Uses request.host to auto-detect the correct IP/port."""
+    try:
+        # Use the actual host from the incoming request
+        host = request.host  # e.g. "100.70.78.80:5001"
+        scheme = request.scheme or "http"
+        return f"{scheme}://{host}/files/{filename}"
+    except Exception:
+        return f"http://100.70.78.80:{LISTEN_PORT}/files/{filename}"
+
+
+def _download_with_ytdlp(
+    url: str,
+    kind: str = "video",
+    fmt: str = "mp4",
+    quality: str = "720",
+) -> List[Dict[str, str]]:
+    """Download media with yt-dlp and return list of file info dicts."""
+
+    _cleanup_old_downloads()
+
+    # Normalize YouTube URLs
+    original_url = url
+    if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+        url = _normalize_youtube_url(url)
+        if url != original_url:
+            print(f"[WORKER] download normalized={url}", flush=True)
+
+    # Build unique output filename template
+    ts = int(time.time())
+    rand = os.urandom(3).hex()
+    outtmpl = str(WORKER_DOWNLOADS_DIR / f"dl_{ts}_{rand}_%(title).80s.%(ext)s")
+
+    # Format selection based on kind
+    if kind == "audio":
+        format_str = "bestaudio[ext=m4a]/bestaudio/best"
+    else:
+        # Video with height constraint
+        h = 720
+        try:
+            h = int(quality) if quality and quality.lower() != "best" else 9999
+        except (ValueError, TypeError):
+            h = 720
+        format_str = (
+            f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
+            f"bv*[height<={h}]+ba/"
+            f"b[height<={h}][ext=mp4]/"
+            f"best[height<={h}]/"
+            f"best"
+        )
+
+    # Build yt-dlp command
+    cmd: List[str] = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "-f", format_str,
+        "-o", outtmpl,
+    ]
+
+    # Merge to mp4 for video
+    if kind == "video":
+        cmd.extend(["--merge-output-format", fmt or "mp4"])
+
+    # Audio post-processing
+    if kind == "audio":
+        target_codec = fmt if fmt in ("mp3", "m4a", "ogg", "opus", "wav", "flac") else "mp3"
+        cmd.extend([
+            "--extract-audio",
+            "--audio-format", target_codec,
+            "--audio-quality", "192K",
+        ])
+
+    cmd.append(url)
+
+    print(f"[WORKER] download cmd={' '.join(cmd[:6])}... {url}", flush=True)
+
+    # Track files before download
+    before = set(WORKER_DOWNLOADS_DIR.iterdir()) if WORKER_DOWNLOADS_DIR.exists() else set()
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=DOWNLOAD_TIMEOUT,
+            cwd=str(WORKER_DOWNLOADS_DIR),
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            error_text = stderr or stdout or "Unknown yt-dlp error"
+            # Log last 3 lines of error
+            error_lines = error_text.splitlines()[-3:]
+            for line in error_lines:
+                print(f"[WORKER] yt-dlp error: {line}", flush=True)
+            return []
+    except subprocess.TimeoutExpired:
+        print(f"[WORKER] download timeout after {DOWNLOAD_TIMEOUT}s", flush=True)
+        return []
+    except FileNotFoundError:
+        print("[WORKER] yt-dlp not found! Install with: pip install yt-dlp", flush=True)
+        return []
+    except Exception as e:
+        print(f"[WORKER] download exception: {type(e).__name__}: {e}", flush=True)
+        return []
+
+    # Find new files
+    after = set(WORKER_DOWNLOADS_DIR.iterdir()) if WORKER_DOWNLOADS_DIR.exists() else set()
+    new_files = sorted(
+        [f for f in (after - before) if f.is_file() and f.stat().st_size > 100],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not new_files:
+        print("[WORKER] download produced no files", flush=True)
+        return []
+
+    # Build response
+    files_out: List[Dict[str, str]] = []
+    for f in new_files:
+        safe_name = _sanitize_filename(f.name)
+        # Rename if needed
+        if safe_name != f.name:
+            new_path = f.parent / safe_name
+            try:
+                f.rename(new_path)
+                f = new_path
+            except Exception:
+                safe_name = f.name
+
+        file_kind = _detect_kind_from_path(f)
+        file_url = _get_worker_file_url(safe_name)
+
+        files_out.append({
+            "name": safe_name,
+            "url": file_url,
+            "kind": file_kind,
+            "size": f.stat().st_size,
+        })
+        print(f"[WORKER] download file: {safe_name} ({f.stat().st_size} bytes) kind={file_kind}", flush=True)
+
+    return files_out
+
+
+# ---------------------------------------------------------------------------
+# Flask routes — /download (yt-dlp)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/download", methods=["POST"])
+def handle_download():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        data = {}
+
+    url = str(data.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "files": [], "message": "Missing 'url' parameter"}), 400
+
+    kind = str(data.get("kind") or "video").strip().lower()
+    if kind not in ("video", "audio"):
+        kind = "video"
+
+    fmt = str(data.get("format") or ("mp4" if kind == "video" else "mp3")).strip().lower()
+    quality = str(data.get("quality") or "720").strip()
+
+    print(f"[WORKER] download input={url}", flush=True)
+    print(f"[WORKER] download kind={kind} format={fmt} quality={quality}", flush=True)
+
+    try:
+        files = _download_with_ytdlp(url, kind=kind, fmt=fmt, quality=quality)
+    except Exception as exc:
+        print(f"[WORKER] download ERROR: {exc}", flush=True)
+        traceback.print_exc()
+        return jsonify({
+            "ok": False,
+            "files": [],
+            "message": f"Download failed: {type(exc).__name__}: {exc}",
+            "url": url,
+        })
+
+    if not files:
+        return jsonify({
+            "ok": False,
+            "files": [],
+            "message": "yt-dlp produced no output files.",
+            "url": url,
+        })
+
+    print(f"[WORKER] download ok files={len(files)}", flush=True)
+    return jsonify({
+        "ok": True,
+        "files": files,
+        "message": f"Worker Termux: {len(files)} file(s) downloaded",
+        "url": url,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Flask routes — /files/<filename> (serve downloads)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/files/<path:filename>", methods=["GET"])
+def serve_file(filename: str):
+    # Security: prevent path traversal
+    safe = str(filename or "").strip()
+    if not safe or ".." in safe or "/" in safe or "\\" in safe or "\x00" in safe:
+        print(f"[WORKER] file BLOCKED (traversal): {repr(filename)}", flush=True)
+        abort(400)
+
+    safe = _sanitize_filename(safe)
+    filepath = (WORKER_DOWNLOADS_DIR / safe).resolve()
+
+    # Ensure it stays within downloads dir
+    if not str(filepath).startswith(str(WORKER_DOWNLOADS_DIR.resolve())):
+        print(f"[WORKER] file BLOCKED (escape): {repr(filename)}", flush=True)
+        abort(403)
+
+    if not filepath.exists() or not filepath.is_file():
+        print(f"[WORKER] file NOT FOUND: {safe}", flush=True)
+        abort(404)
+
+    print(f"[WORKER] file served={safe} ({filepath.stat().st_size} bytes)", flush=True)
+    return send_from_directory(
+        str(WORKER_DOWNLOADS_DIR.resolve()),
+        safe,
+        as_attachment=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flask routes — health & index
+# ---------------------------------------------------------------------------
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "service": "tiktok-photo-worker"})
+    # Quick yt-dlp availability check
+    ytdlp_ok = False
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        ytdlp_ok = result.returncode == 0
+        ytdlp_version = (result.stdout or "").strip() if ytdlp_ok else None
+    except Exception:
+        ytdlp_ok = False
+        ytdlp_version = None
+
+    dl_count = len(list(WORKER_DOWNLOADS_DIR.iterdir())) if WORKER_DOWNLOADS_DIR.exists() else 0
+
+    return jsonify({
+        "ok": True,
+        "service": "muxivo-media-worker",
+        "yt_dlp": ytdlp_ok,
+        "yt_dlp_version": ytdlp_version,
+        "downloads_count": dl_count,
+    })
 
 
 @app.route("/", methods=["GET"])
@@ -566,10 +932,12 @@ def index():
     return jsonify(
         {
             "ok": True,
-            "service": "tiktok-photo-worker",
+            "service": "muxivo-media-worker",
             "endpoints": {
                 "POST /extract": "Extract gallery images from TikTok /photo/ URL",
-                "GET /health": "Health check",
+                "POST /download": "Download video/audio via yt-dlp",
+                "GET /files/<name>": "Serve downloaded files",
+                "GET /health": "Health check with yt-dlp status",
             },
         }
     )
@@ -579,5 +947,21 @@ def index():
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print(f"[WORKER] Starting on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
+    WORKER_DOWNLOADS_DIR.mkdir(exist_ok=True)
+    print(f"[WORKER] Starting Muxivo Media Worker on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
+    print(f"[WORKER] Downloads dir: {WORKER_DOWNLOADS_DIR.resolve()}", flush=True)
+
+    # Check yt-dlp on startup
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            print(f"[WORKER] yt-dlp version: {(r.stdout or '').strip()}", flush=True)
+        else:
+            print("[WORKER] WARNING: yt-dlp not working!", flush=True)
+    except Exception:
+        print("[WORKER] WARNING: yt-dlp not found! pip install yt-dlp", flush=True)
+
     app.run(host=LISTEN_HOST, port=LISTEN_PORT, debug=False)
