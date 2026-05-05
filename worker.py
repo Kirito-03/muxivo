@@ -566,10 +566,16 @@ def handle_extract():
 # ---------------------------------------------------------------------------
 # Download config
 # ---------------------------------------------------------------------------
-WORKER_DOWNLOADS_DIR = Path("worker_downloads")
-WORKER_DOWNLOADS_DIR.mkdir(exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+WORKER_DOWNLOADS_DIR = (BASE_DIR / "worker_downloads").resolve()
+WORKER_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_TIMEOUT = 120  # max seconds for a single yt-dlp download
 MAX_DOWNLOAD_FILES = 50  # max files kept before cleanup
+
+# Cleanup config
+MAX_FILE_AGE_SECONDS = 1800          # 30 minutes
+MAX_TOTAL_SIZE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+MIN_FILE_AGE_PROTECT = 300           # 5 minutes — don't delete files younger than this
 
 # YouTube query params to strip for normalization
 _YT_STRIP_PARAMS = {
@@ -612,13 +618,20 @@ def _normalize_youtube_url(url: str) -> str:
 
 
 def _sanitize_filename(name: str) -> str:
-    """Remove dangerous characters from filenames."""
+    """Remove dangerous characters and make filename URL-safe."""
     name = str(name or "download").strip()
     # Remove path separators and null bytes
     name = name.replace("/", "_").replace("\\", "_").replace("\x00", "")
     name = re.sub(r'[<>:"|?*]', "_", name)
-    # Collapse whitespace
-    name = re.sub(r"\s+", " ", name).strip()
+    # Replace ALL whitespace with underscores (URL-safe)
+    name = re.sub(r"\s+", "_", name).strip("_")
+    # Remove parentheses and brackets that cause issues
+    name = name.replace("(", "").replace(")", "").replace("[", "").replace("]", "")
+    # Collapse multiple underscores
+    name = re.sub(r"_+", "_", name)
+    # Remove non-ASCII characters that may break URLs
+    name = re.sub(r"[^\w.\-]", "_", name)
+    name = re.sub(r"_+", "_", name).strip("_")
     # Limit length
     if len(name) > 200:
         stem, _, ext = name.rpartition(".")
@@ -629,22 +642,117 @@ def _sanitize_filename(name: str) -> str:
     return name or "download"
 
 
-def _cleanup_old_downloads(keep: int = MAX_DOWNLOAD_FILES) -> None:
-    """Remove oldest files if download dir exceeds limit."""
+def cleanup_old_files() -> Dict[str, Any]:
+    """Smart cleanup of worker_downloads/.
+
+    - Deletes files older than MAX_FILE_AGE_SECONDS (30min).
+    - If total size > MAX_TOTAL_SIZE_BYTES (2GB), deletes oldest files first.
+    - Protects files younger than MIN_FILE_AGE_PROTECT (5min).
+    - Never touches files outside WORKER_DOWNLOADS_DIR.
+
+    Returns dict with 'deleted' count and 'freed_bytes'.
+    """
+    deleted = 0
+    freed_bytes = 0
+    now = time.time()
+
+    if not WORKER_DOWNLOADS_DIR.exists():
+        return {"deleted": 0, "freed_bytes": 0}
+
     try:
-        files = sorted(
-            [f for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()],
-            key=lambda f: f.stat().st_mtime,
-        )
-        if len(files) > keep:
-            for f in files[: len(files) - keep]:
-                try:
-                    f.unlink()
-                    print(f"[WORKER] cleanup: removed {f.name}", flush=True)
-                except Exception:
-                    pass
+        all_files = [
+            f for f in WORKER_DOWNLOADS_DIR.iterdir()
+            if f.is_file() and str(f.resolve()).startswith(str(WORKER_DOWNLOADS_DIR.resolve()))
+        ]
     except Exception:
-        pass
+        return {"deleted": 0, "freed_bytes": 0}
+
+    # Sort by mtime ascending (oldest first)
+    all_files.sort(key=lambda f: f.stat().st_mtime)
+
+    # --- Phase 1: Delete files older than MAX_FILE_AGE_SECONDS ---
+    for f in list(all_files):
+        try:
+            age = now - f.stat().st_mtime
+            if age > MAX_FILE_AGE_SECONDS:
+                size = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed_bytes += size
+                all_files.remove(f)
+        except Exception:
+            pass
+
+    # --- Phase 2: If still over size limit, delete oldest (but protect <5min) ---
+    try:
+        total_size = sum(f.stat().st_size for f in all_files)
+    except Exception:
+        total_size = 0
+
+    if total_size > MAX_TOTAL_SIZE_BYTES:
+        for f in list(all_files):
+            if total_size <= MAX_TOTAL_SIZE_BYTES:
+                break
+            try:
+                age = now - f.stat().st_mtime
+                if age < MIN_FILE_AGE_PROTECT:
+                    continue  # protect recent files
+                size = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed_bytes += size
+                total_size -= size
+                all_files.remove(f)
+            except Exception:
+                pass
+
+    # --- Phase 3: If STILL over limit, delete even recent files ---
+    if total_size > MAX_TOTAL_SIZE_BYTES:
+        for f in list(all_files):
+            if total_size <= MAX_TOTAL_SIZE_BYTES:
+                break
+            try:
+                size = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed_bytes += size
+                total_size -= size
+                all_files.remove(f)
+            except Exception:
+                pass
+
+    # --- Phase 4: Enforce max file count ---
+    if len(all_files) > MAX_DOWNLOAD_FILES:
+        for f in all_files[: len(all_files) - MAX_DOWNLOAD_FILES]:
+            try:
+                age = now - f.stat().st_mtime
+                if age < MIN_FILE_AGE_PROTECT:
+                    continue
+                size = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed_bytes += size
+            except Exception:
+                pass
+
+    # Log
+    freed_mb = freed_bytes / (1024 * 1024)
+    try:
+        remaining_size = sum(f.stat().st_size for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file())
+        remaining_mb = remaining_size / (1024 * 1024)
+    except Exception:
+        remaining_mb = 0
+
+    if deleted > 0:
+        print(f"[WORKER] cleanup deleted={deleted} freed={freed_mb:.1f}MB", flush=True)
+    print(f"[WORKER] cleanup total_size={remaining_mb:.1f}MB", flush=True)
+
+    return {"deleted": deleted, "freed_bytes": freed_bytes}
+
+
+def _cleanup_old_downloads(keep: int = MAX_DOWNLOAD_FILES) -> None:
+    """Legacy wrapper — calls cleanup_old_files()."""
+    cleanup_old_files()
 
 
 def _detect_kind_from_path(p: Path) -> str:
@@ -661,14 +769,22 @@ def _detect_kind_from_path(p: Path) -> str:
 
 def _get_worker_file_url(filename: str) -> str:
     """Build the full URL for a worker file.
-    Uses request.host to auto-detect the correct IP/port."""
+    Uses request.host to auto-detect the correct IP/port.
+    URL-encodes the filename to handle special characters."""
+    from urllib.parse import quote
+    encoded = quote(filename, safe="")
     try:
         # Use the actual host from the incoming request
         host = request.host  # e.g. "100.70.78.80:5001"
         scheme = request.scheme or "http"
-        return f"{scheme}://{host}/files/{filename}"
+        return f"{scheme}://{host}/files/{encoded}"
     except Exception:
-        return f"http://100.70.78.80:{LISTEN_PORT}/files/{filename}"
+        return f"http://100.70.78.80:{LISTEN_PORT}/files/{encoded}"
+
+
+def _has_ffmpeg() -> bool:
+    """Check if ffmpeg is available in PATH."""
+    return shutil.which("ffmpeg") is not None
 
 
 def _download_with_ytdlp(
@@ -676,10 +792,15 @@ def _download_with_ytdlp(
     kind: str = "video",
     fmt: str = "mp4",
     quality: str = "720",
-) -> List[Dict[str, str]]:
-    """Download media with yt-dlp and return list of file info dicts."""
+) -> Dict[str, Any]:
+    """Download media with yt-dlp. Returns dict with 'files', 'error', 'returncode', etc.
 
+    Always returns a dict — never raises. Caller checks result['files'].
+    """
     _cleanup_old_downloads()
+
+    has_ffmpeg = _has_ffmpeg()
+    print(f"[WORKER] ffmpeg={'yes' if has_ffmpeg else 'NO'}", flush=True)
 
     # Normalize YouTube URLs
     original_url = url
@@ -688,30 +809,49 @@ def _download_with_ytdlp(
         if url != original_url:
             print(f"[WORKER] download normalized={url}", flush=True)
 
-    # Build unique output filename template
+    # Build unique output filename template — ABSOLUTE path
     ts = int(time.time())
     rand = os.urandom(3).hex()
     outtmpl = str(WORKER_DOWNLOADS_DIR / f"dl_{ts}_{rand}_%(title).80s.%(ext)s")
+    print(f"[WORKER] DOWNLOAD_DIR={WORKER_DOWNLOADS_DIR}", flush=True)
+    print(f"[WORKER] outtmpl={outtmpl}", flush=True)
 
-    # Format selection based on kind
+    # ---------------------------------------------------------------
+    # Format selection — Termux-compatible (simple first)
+    # ---------------------------------------------------------------
     if kind == "audio":
+        # Simple: grab best audio stream, no conversion if no ffmpeg
         format_str = "bestaudio[ext=m4a]/bestaudio/best"
     else:
-        # Video with height constraint
+        # Video: prefer progressive streams that don't need merge
         h = 720
         try:
             h = int(quality) if quality and quality.lower() != "best" else 9999
         except (ValueError, TypeError):
             h = 720
-        format_str = (
-            f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
-            f"bv*[height<={h}]+ba/"
-            f"b[height<={h}][ext=mp4]/"
-            f"best[height<={h}]/"
-            f"best"
-        )
 
+        if has_ffmpeg:
+            # With ffmpeg: try DASH merge, fallback to progressive
+            format_str = (
+                f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
+                f"bv*[height<={h}]+ba/"
+                f"b[height<={h}][ext=mp4]/"
+                f"best[height<={h}]/"
+                f"18/best"
+            )
+        else:
+            # Without ffmpeg: ONLY progressive streams (no merge possible)
+            # Format 18 = YouTube 360p mp4 progressive (always available)
+            format_str = (
+                f"b[height<={h}][ext=mp4]/"
+                f"best[height<={h}][ext=mp4]/"
+                f"best[height<={h}]/"
+                f"18/best[ext=mp4]/best"
+            )
+
+    # ---------------------------------------------------------------
     # Build yt-dlp command
+    # ---------------------------------------------------------------
     cmd: List[str] = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
@@ -722,12 +862,12 @@ def _download_with_ytdlp(
         "-o", outtmpl,
     ]
 
-    # Merge to mp4 for video
-    if kind == "video":
+    # Merge only if ffmpeg exists
+    if kind == "video" and has_ffmpeg:
         cmd.extend(["--merge-output-format", fmt or "mp4"])
 
-    # Audio post-processing
-    if kind == "audio":
+    # Audio conversion only if ffmpeg exists
+    if kind == "audio" and has_ffmpeg:
         target_codec = fmt if fmt in ("mp3", "m4a", "ogg", "opus", "wav", "flac") else "mp3"
         cmd.extend([
             "--extract-audio",
@@ -737,51 +877,187 @@ def _download_with_ytdlp(
 
     cmd.append(url)
 
-    print(f"[WORKER] download cmd={' '.join(cmd[:6])}... {url}", flush=True)
+    # Log the full command for debugging
+    cmd_display = " ".join(cmd)
+    print(f"[WORKER] download cmd={cmd_display}", flush=True)
 
-    # Track files before download
-    before = set(WORKER_DOWNLOADS_DIR.iterdir()) if WORKER_DOWNLOADS_DIR.exists() else set()
+    # Track files before download — use resolved string paths for reliable comparison
+    prefix = f"dl_{ts}_{rand}_"
+    print(f"[WORKER] prefix={prefix}", flush=True)
+    before_names: set = set()
+    try:
+        before_names = {f.name for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()}
+    except Exception:
+        before_names = set()
+    print(f"[WORKER] before_count={len(before_names)}", flush=True)
 
+    # ---------------------------------------------------------------
+    # Execute yt-dlp
+    # ---------------------------------------------------------------
+    run_cwd = str(BASE_DIR)
+    print(f"[WORKER] cwd={run_cwd}", flush=True)
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=DOWNLOAD_TIMEOUT,
-            cwd=str(WORKER_DOWNLOADS_DIR),
+            cwd=run_cwd,
         )
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            stdout = (result.stdout or "").strip()
-            error_text = stderr or stdout or "Unknown yt-dlp error"
-            # Log last 3 lines of error
-            error_lines = error_text.splitlines()[-3:]
-            for line in error_lines:
-                print(f"[WORKER] yt-dlp error: {line}", flush=True)
-            return []
     except subprocess.TimeoutExpired:
         print(f"[WORKER] download timeout after {DOWNLOAD_TIMEOUT}s", flush=True)
-        return []
+        return {
+            "files": [],
+            "error": f"yt-dlp timeout after {DOWNLOAD_TIMEOUT}s",
+            "returncode": -1,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
     except FileNotFoundError:
-        print("[WORKER] yt-dlp not found! Install with: pip install yt-dlp", flush=True)
-        return []
+        msg = "yt-dlp not found! Install with: pip install yt-dlp"
+        print(f"[WORKER] {msg}", flush=True)
+        return {
+            "files": [],
+            "error": msg,
+            "returncode": -1,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
     except Exception as e:
-        print(f"[WORKER] download exception: {type(e).__name__}: {e}", flush=True)
-        return []
+        msg = f"{type(e).__name__}: {e}"
+        print(f"[WORKER] download exception: {msg}", flush=True)
+        return {
+            "files": [],
+            "error": msg,
+            "returncode": -1,
+            "stdout_tail": "",
+            "stderr_tail": "",
+        }
 
-    # Find new files
-    after = set(WORKER_DOWNLOADS_DIR.iterdir()) if WORKER_DOWNLOADS_DIR.exists() else set()
-    new_files = sorted(
-        [f for f in (after - before) if f.is_file() and f.stat().st_size > 100],
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
+    # ---------------------------------------------------------------
+    # Log returncode + stdout/stderr tails
+    # ---------------------------------------------------------------
+    rc = result.returncode
+    stdout_full = (result.stdout or "").strip()
+    stderr_full = (result.stderr or "").strip()
+
+    # Keep last 5 lines for diagnostics
+    stdout_tail = "\n".join(stdout_full.splitlines()[-5:]) if stdout_full else ""
+    stderr_tail = "\n".join(stderr_full.splitlines()[-5:]) if stderr_full else ""
+
+    print(f"[WORKER] yt-dlp returncode={rc}", flush=True)
+    if stdout_tail:
+        print(f"[WORKER] yt-dlp stdout tail=\n{stdout_tail}", flush=True)
+    if stderr_tail:
+        print(f"[WORKER] yt-dlp stderr tail=\n{stderr_tail}", flush=True)
+
+    if rc != 0:
+        error_summary = stderr_tail or stdout_tail or "Unknown yt-dlp error"
+        return {
+            "files": [],
+            "error": error_summary,
+            "returncode": rc,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+        }
+
+    # ---------------------------------------------------------------
+    # Find new files — robust detection
+    # ---------------------------------------------------------------
+    # Extensions to REJECT (temp/intermediate files)
+    _TEMP_SUFFIXES = {".part", ".ytdl", ".temp", ".tmp", ".mhtml"}
+
+    def _is_temp_file(p: Path) -> bool:
+        """Return True if file looks like a yt-dlp temp/intermediate file."""
+        name = p.name.lower()
+        suffix = p.suffix.lower()
+        if suffix in _TEMP_SUFFIXES:
+            return True
+        # .f137.mp4, .f140.m4a — intermediate DASH fragments before merge
+        if re.match(r".*\.f\d+\.\w+$", name):
+            return True
+        return False
+
+    # Valid media extensions
+    _MEDIA_SUFFIXES = {
+        ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".ts",
+        ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac", ".wma",
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif",
+    }
+
+    def _is_valid_media(p: Path) -> bool:
+        """Return True if file is a valid media file (not temp, > 100 bytes)."""
+        if not p.is_file():
+            return False
+        if _is_temp_file(p):
+            return False
+        try:
+            if p.stat().st_size < 100:
+                return False
+        except Exception:
+            return False
+        return p.suffix.lower() in _MEDIA_SUFFIXES
+
+    # Strategy 1: compare before/after filenames
+    after_names: set = set()
+    try:
+        after_names = {f.name for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()}
+    except Exception:
+        after_names = set()
+    print(f"[WORKER] after_count={len(after_names)}", flush=True)
+
+    new_names = after_names - before_names
+    new_files = [
+        WORKER_DOWNLOADS_DIR / n
+        for n in new_names
+        if _is_valid_media(WORKER_DOWNLOADS_DIR / n)
+    ]
+    print(f"[WORKER] new_files={[f.name for f in new_files]}", flush=True)
+
+    # Strategy 2: if set-diff found nothing, search by prefix
+    if not new_files:
+        print(f"[WORKER] set-diff empty, searching by prefix={prefix}", flush=True)
+        prefix_files = [
+            f for f in WORKER_DOWNLOADS_DIR.glob(f"{prefix}*")
+            if _is_valid_media(f)
+        ]
+        print(f"[WORKER] prefix_files={[f.name for f in prefix_files]}", flush=True)
+        new_files = prefix_files
+
+    # Strategy 3: if still nothing, grab ANY recent file (last 30s)
+    if not new_files:
+        cutoff = time.time() - 30
+        recent = [
+            f for f in WORKER_DOWNLOADS_DIR.iterdir()
+            if _is_valid_media(f) and f.stat().st_mtime >= cutoff
+        ]
+        if recent:
+            print(f"[WORKER] fallback: found {len(recent)} recent files", flush=True)
+            new_files = recent
+
+    # Sort by modification time (newest first)
+    new_files = sorted(new_files, key=lambda f: f.stat().st_mtime, reverse=True)
 
     if not new_files:
-        print("[WORKER] download produced no files", flush=True)
-        return []
+        # yt-dlp returned 0 but produced nothing
+        print("[WORKER] download produced no files (returncode=0)", flush=True)
+        # List all files in dir for debugging
+        try:
+            all_files = [f.name for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()]
+            print(f"[WORKER] dir contents={all_files}", flush=True)
+        except Exception:
+            pass
+        return {
+            "files": [],
+            "error": "yt-dlp returned success but no files were created",
+            "returncode": 0,
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
+        }
 
+    # ---------------------------------------------------------------
     # Build response
+    # ---------------------------------------------------------------
     files_out: List[Dict[str, str]] = []
     for f in new_files:
         safe_name = _sanitize_filename(f.name)
@@ -805,7 +1081,13 @@ def _download_with_ytdlp(
         })
         print(f"[WORKER] download file: {safe_name} ({f.stat().st_size} bytes) kind={file_kind}", flush=True)
 
-    return files_out
+    return {
+        "files": files_out,
+        "error": None,
+        "returncode": 0,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +1117,7 @@ def handle_download():
     print(f"[WORKER] download kind={kind} format={fmt} quality={quality}", flush=True)
 
     try:
-        files = _download_with_ytdlp(url, kind=kind, fmt=fmt, quality=quality)
+        result = _download_with_ytdlp(url, kind=kind, fmt=fmt, quality=quality)
     except Exception as exc:
         print(f"[WORKER] download ERROR: {exc}", flush=True)
         traceback.print_exc()
@@ -846,15 +1128,39 @@ def handle_download():
             "url": url,
         })
 
+    files = result.get("files") or []
+    error = result.get("error")
+    rc = result.get("returncode", -1)
+    stdout_tail = result.get("stdout_tail", "")
+    stderr_tail = result.get("stderr_tail", "")
+
     if not files:
+        print(f"[WORKER] download FAILED: {error}", flush=True)
         return jsonify({
             "ok": False,
             "files": [],
-            "message": "yt-dlp produced no output files.",
+            "message": error or "yt-dlp produced no output files.",
+            "returncode": rc,
+            "stderr_tail": stderr_tail[-500:] if stderr_tail else "",
+            "stdout_tail": stdout_tail[-500:] if stdout_tail else "",
             "url": url,
+            "debug_hint": (
+                "Try manually in Termux:\n"
+                f"  python -m yt_dlp --version\n"
+                f"  python -m yt_dlp -F \"{url}\"\n"
+                f"  python -m yt_dlp --no-playlist -f \"18/best[ext=mp4]/best\" "
+                f"-o \"worker_downloads/test.%(ext)s\" \"{url}\""
+            ),
         })
 
     print(f"[WORKER] download ok files={len(files)}", flush=True)
+
+    # Post-download cleanup
+    try:
+        cleanup_old_files()
+    except Exception:
+        pass
+
     return jsonify({
         "ok": True,
         "files": files,
@@ -897,6 +1203,27 @@ def serve_file(filename: str):
 
 
 # ---------------------------------------------------------------------------
+# Flask routes — /cleanup
+# ---------------------------------------------------------------------------
+
+
+@app.route("/cleanup", methods=["POST"])
+def handle_cleanup():
+    try:
+        result = cleanup_old_files()
+    except Exception as exc:
+        print(f"[WORKER] cleanup ERROR: {exc}", flush=True)
+        return jsonify({"ok": False, "message": str(exc)})
+
+    return jsonify({
+        "ok": True,
+        "deleted": result.get("deleted", 0),
+        "freed_bytes": result.get("freed_bytes", 0),
+        "freed_mb": round(result.get("freed_bytes", 0) / (1024 * 1024), 1),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Flask routes — health & index
 # ---------------------------------------------------------------------------
 
@@ -916,7 +1243,14 @@ def health():
         ytdlp_ok = False
         ytdlp_version = None
 
-    dl_count = len(list(WORKER_DOWNLOADS_DIR.iterdir())) if WORKER_DOWNLOADS_DIR.exists() else 0
+    dl_count = 0
+    dl_size_mb = 0.0
+    try:
+        files = [f for f in WORKER_DOWNLOADS_DIR.iterdir() if f.is_file()]
+        dl_count = len(files)
+        dl_size_mb = round(sum(f.stat().st_size for f in files) / (1024 * 1024), 1)
+    except Exception:
+        pass
 
     return jsonify({
         "ok": True,
@@ -924,6 +1258,9 @@ def health():
         "yt_dlp": ytdlp_ok,
         "yt_dlp_version": ytdlp_version,
         "downloads_count": dl_count,
+        "downloads_size_mb": dl_size_mb,
+        "max_age_min": MAX_FILE_AGE_SECONDS // 60,
+        "max_size_gb": round(MAX_TOTAL_SIZE_BYTES / (1024**3), 1),
     })
 
 
@@ -936,8 +1273,9 @@ def index():
             "endpoints": {
                 "POST /extract": "Extract gallery images from TikTok /photo/ URL",
                 "POST /download": "Download video/audio via yt-dlp",
+                "POST /cleanup": "Trigger manual cleanup of old downloads",
                 "GET /files/<name>": "Serve downloaded files",
-                "GET /health": "Health check with yt-dlp status",
+                "GET /health": "Health check with yt-dlp and storage status",
             },
         }
     )
@@ -950,6 +1288,15 @@ if __name__ == "__main__":
     WORKER_DOWNLOADS_DIR.mkdir(exist_ok=True)
     print(f"[WORKER] Starting Muxivo Media Worker on {LISTEN_HOST}:{LISTEN_PORT}", flush=True)
     print(f"[WORKER] Downloads dir: {WORKER_DOWNLOADS_DIR.resolve()}", flush=True)
+    print(f"[WORKER] Cleanup: max_age={MAX_FILE_AGE_SECONDS}s max_size={MAX_TOTAL_SIZE_BYTES // (1024**2)}MB", flush=True)
+
+    # Cleanup at startup
+    try:
+        startup_result = cleanup_old_files()
+        if startup_result.get("deleted", 0) > 0:
+            print(f"[WORKER] startup cleanup: deleted={startup_result['deleted']}", flush=True)
+    except Exception:
+        pass
 
     # Check yt-dlp on startup
     try:
@@ -963,5 +1310,11 @@ if __name__ == "__main__":
             print("[WORKER] WARNING: yt-dlp not working!", flush=True)
     except Exception:
         print("[WORKER] WARNING: yt-dlp not found! pip install yt-dlp", flush=True)
+
+    # Check ffmpeg
+    if _has_ffmpeg():
+        print("[WORKER] ffmpeg: available", flush=True)
+    else:
+        print("[WORKER] ffmpeg: NOT FOUND (merge/conversion disabled)", flush=True)
 
     app.run(host=LISTEN_HOST, port=LISTEN_PORT, debug=False)

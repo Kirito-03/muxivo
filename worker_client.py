@@ -276,9 +276,19 @@ def download_worker_files_to_local(
         if not name:
             # Extraer nombre del URL
             try:
-                name = Path(urlparse(remote_url).path).name or f"worker_file_{os.urandom(3).hex()}"
+                from urllib.parse import unquote
+                name = Path(unquote(urlparse(remote_url).path)).name or f"worker_file_{os.urandom(3).hex()}"
             except Exception:
                 name = f"worker_file_{os.urandom(3).hex()}"
+
+        # Sanitizar nombre local: reemplazar espacios y caracteres especiales
+        import re as _re
+        name = name.replace(" ", "_")
+        name = _re.sub(r'[<>:"|?*()\[\]]', "", name)
+        name = _re.sub(r"[^\w.\-]", "_", name)
+        name = _re.sub(r"_+", "_", name).strip("_")
+        if not name:
+            name = f"worker_file_{os.urandom(3).hex()}"
 
         dest = (out_dir / name).resolve()
         # Evitar colisiones
