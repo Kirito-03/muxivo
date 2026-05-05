@@ -36,6 +36,7 @@ from worker_client import (
     worker_extract_instagram,
     worker_download_youtube,
     worker_download_instagram,
+    worker_download_tiktok,
     log_worker_status,
 )
 
@@ -1470,6 +1471,10 @@ def api_download():
                         wk_files = worker_download_youtube(
                             first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=90
                         )
+                    elif "tiktok.com" in _first_host:
+                        wk_files = worker_download_tiktok(
+                            first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=60
+                        )
                     elif "instagram.com" in _first_host:
                         wk_files = worker_download_instagram(
                             first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=60
@@ -1620,6 +1625,8 @@ def api_download():
                     wk_q2 = detail or "720"
                     if "youtube.com" in _first_host2 or "youtu.be" in _first_host2:
                         wk_dl = worker_download_youtube(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=90)
+                    elif "tiktok.com" in _first_host2:
+                        wk_dl = worker_download_tiktok(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=60)
                     elif "instagram.com" in _first_host2:
                         wk_dl = worker_download_instagram(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=60)
                     else:

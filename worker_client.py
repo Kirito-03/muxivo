@@ -73,6 +73,15 @@ _BLOCKING_MARKERS = [
     "requested format is not available",
     "only images are available",
     "no video formats found",
+    # TikTok
+    "your ip address is blocked",
+    "ip address is blocked",
+    "unable to extract",
+    "tiktok said",
+    "tiktok returned an empty",
+    "video is currently unavailable",
+    "content is not available",
+    "this video is private",
     # Instagram
     "instagram api is not granting access",
     "instagram sent an empty media response",
@@ -387,6 +396,17 @@ def worker_download_instagram(
     timeout: int = 45,
 ) -> List[Dict[str, Any]]:
     """Wrapper para descargar Instagram via worker."""
+    return call_worker_download(url, kind=kind, fmt=fmt, quality=quality, timeout=timeout)
+
+
+def worker_download_tiktok(
+    url: str,
+    kind: str = "video",
+    fmt: str = "mp4",
+    quality: str = "720",
+    timeout: int = 60,
+) -> List[Dict[str, Any]]:
+    """Wrapper para descargar TikTok video/audio via worker."""
     return call_worker_download(url, kind=kind, fmt=fmt, quality=quality, timeout=timeout)
 
 
