@@ -3562,29 +3562,12 @@ def probe_image_candidates(
     if "tiktok.com" in host and "/photo/" in path:
         fallback_used = False
         worker_used = False
-        # Resolver cookies TikTok específicas para photo probe
-        tiktok_ck = None
-        try:
-            tiktok_ck = get_cookiefile_for_platform("tiktok")
-        except Exception:
-            tiktok_ck = None
-        if not tiktok_ck and cookies_path:
-            try:
-                _raw_txt = cookies_path.read_text(encoding="utf-8", errors="ignore")
-                if "tiktok.com" in _raw_txt.lower():
-                    tiktok_ck = cookies_path
-            except Exception:
-                pass
-        try:
-            use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
-            candidates2 = []
-            if use_pw not in ("0", "false", "no", "off"):
-                candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=15, cookies_path=tiktok_ck)
-            if not candidates2:
-                candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
-        except Exception:
-            candidates2 = []
-        if not candidates2:
+        candidates2: List[Dict[str, str]] = []
+
+        # --- WORKER-FIRST: si hay worker configurado, llamarlo primero ---
+        worker_url_configured = bool((os.environ.get("TIKTOK_PHOTO_WORKER_URL") or os.environ.get("MEDIA_WORKER_URL") or "").strip())
+        if worker_url_configured:
+            print("[TIKTOK-PHOTO] worker-first enabled", flush=True)
             try:
                 wk_items = _tiktok_photo_worker_extract(url, timeout=20)
             except Exception:
@@ -3593,8 +3576,35 @@ def probe_image_candidates(
                 candidates2 = [{"url": str(it.get("url") or "").strip(), "label": str(it.get("label") or "").strip()} for it in wk_items]
                 worker_used = True
                 print(f"[TIKTOK-PHOTO] worker ok items={len(candidates2)}", flush=True)
+                print("[TIKTOK-PHOTO] skipping local Playwright because worker succeeded", flush=True)
             else:
-                print("[TIKTOK-PHOTO] worker unavailable or empty -> fallback preview", flush=True)
+                print("[TIKTOK-PHOTO] worker returned empty -> falling back to local Playwright", flush=True)
+
+        # --- LOCAL FALLBACK: Playwright + HTML/JSON (solo si worker no produjo items) ---
+        if not candidates2:
+            # Resolver cookies TikTok específicas para photo probe
+            tiktok_ck = None
+            try:
+                tiktok_ck = get_cookiefile_for_platform("tiktok")
+            except Exception:
+                tiktok_ck = None
+            if not tiktok_ck and cookies_path:
+                try:
+                    _raw_txt = cookies_path.read_text(encoding="utf-8", errors="ignore")
+                    if "tiktok.com" in _raw_txt.lower():
+                        tiktok_ck = cookies_path
+                except Exception:
+                    pass
+            try:
+                use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
+                if use_pw not in ("0", "false", "no", "off"):
+                    candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=15, cookies_path=tiktok_ck)
+                if not candidates2:
+                    candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
+            except Exception:
+                candidates2 = []
+
+        # --- PREVIEW FALLBACKS: og:image, HTML preview ---
         if not candidates2:
             og = _tiktok_photo_og_image(url, timeout=12)
             if og:

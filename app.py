@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import json
 import logging
@@ -25,6 +25,18 @@ from media_tools import (
     probe_image_candidates,
     resolve_tiktok_url_for_detection,
     validate_instagram_cookiefile,
+)
+from worker_client import (
+    worker_enabled,
+    is_blocking_error,
+    call_worker_extract,
+    call_worker_download,
+    download_worker_files_to_local,
+    worker_extract_tiktok_photos,
+    worker_extract_instagram,
+    worker_download_youtube,
+    worker_download_instagram,
+    log_worker_status,
 )
 
 ROOT_DIR = Path(os.getcwd()).resolve()
@@ -996,6 +1008,18 @@ def api_detect():
             except Exception:
                 candidates = []
 
+        # --- WORKER FALLBACK: TikTok photo ---
+        # Si no hay candidatos o solo hay preview fallback, llamar worker
+        if is_photo and not candidates and worker_enabled():
+            try:
+                _log.info("[WORKER] TikTok photo detect: local empty, trying worker")
+                wk_items = worker_extract_tiktok_photos(first_url, timeout=20)
+                if wk_items:
+                    candidates = wk_items
+                    _log.info("[WORKER] TikTok photo detect: worker returned %d items", len(wk_items))
+            except Exception as wk_exc:
+                _log.warning("[WORKER] TikTok photo detect: worker failed: %s", wk_exc)
+
         if is_photo or candidates:
             def _is_fb(v: Any) -> bool:
                 return str(v or "").strip().lower() in ("1", "true", "yes")
@@ -1008,11 +1032,23 @@ def api_detect():
                     "Para descargar la galería completa, usa modo local o cookies/navegador compatibles."
                 )
             elif is_photo and candidates and any(_is_fb(it.get("fallback")) for it in candidates if isinstance(it, dict)):
-                msg = (
-                    "TikTok de imágenes no expone la galería completa en este entorno del servidor. "
-                    "Solo se pudo obtener una vista previa. "
-                    "Para descargar la galería completa, usa modo local o cookies/navegador compatibles."
-                )
+                # Hay solo preview fallback: intentar worker antes de resignarse
+                if worker_enabled():
+                    try:
+                        _log.info("[WORKER] TikTok photo detect: only preview fallback, trying worker")
+                        wk_items2 = worker_extract_tiktok_photos(first_url, timeout=20)
+                        if wk_items2:
+                            candidates = wk_items2
+                            msg = None  # Worker resolvió, sin mensaje de preview
+                            _log.info("[WORKER] TikTok photo detect: worker replaced preview with %d items", len(wk_items2))
+                    except Exception:
+                        pass
+                if msg is None and candidates and any(_is_fb(it.get("fallback")) for it in candidates if isinstance(it, dict)):
+                    msg = (
+                        "TikTok de imágenes no expone la galería completa en este entorno del servidor. "
+                        "Solo se pudo obtener una vista previa. "
+                        "Para descargar la galería completa, usa modo local o cookies/navegador compatibles."
+                    )
 
             preview_files: Optional[List[Dict[str, str]]] = None
             if is_photo and candidates and any(_is_fb(it.get("fallback")) for it in candidates if isinstance(it, dict)):
@@ -1081,6 +1117,30 @@ def api_detect():
             image_candidates = probe_image_candidates(first_url, cookies_path=cookies_path)
         except Exception:
             image_candidates = []
+
+    # --- WORKER FALLBACK: Instagram gallery ---
+    # Si es Instagram y la galería está vacía o tiene items repetidos, llamar worker
+    if platform == "instagram" and allowed_front == ["image"] and worker_enabled():
+        should_try_worker = False
+        if not image_candidates:
+            should_try_worker = True
+            print("[WORKER] fallback reason=instagram_gallery_empty", flush=True)
+        elif len(image_candidates) >= 2:
+            # Detectar items repetidos
+            urls_set = {str(c.get("url") or "").strip() for c in image_candidates if isinstance(c, dict)}
+            if len(urls_set) < len(image_candidates):
+                should_try_worker = True
+                print("[WORKER] fallback reason=instagram_gallery_repeated_items", flush=True)
+
+        if should_try_worker:
+            try:
+                _log.info("[WORKER] Instagram gallery detect: trying worker")
+                wk_items = worker_extract_instagram(first_url, timeout=25)
+                if wk_items:
+                    image_candidates = wk_items
+                    _log.info("[WORKER] Instagram gallery detect: worker returned %d items", len(wk_items))
+            except Exception as wk_exc:
+                _log.warning("[WORKER] Instagram gallery detect: worker failed: %s", wk_exc)
 
     return jsonify(
         _detect_payload(
@@ -1327,6 +1387,7 @@ def api_download():
                 msg = "El post parece ser IMAGE/GALLERY. Cambia a IMAGE para descargar."
             return jsonify({"message": msg, "tone": "warning"}), 400
 
+    _semaphore_released = False
     try:
         kind_for_tools = "imagen" if requested_kind == "image" else requested_kind
         audio_format = fmt or DEFAULTS["audio"]["format_value"]
@@ -1362,12 +1423,135 @@ def api_download():
             selected_local_paths=selected_local_paths,
         )
     except Exception as e:
+        error_msg = str(e or "")
+
+        # --- WORKER FALLBACK: Download ---
+        # Si el error indica bloqueo/cookies/bot y el worker está habilitado
+        if worker_enabled() and is_blocking_error(error_msg):
+            _log.info("[WORKER] fallback reason=%s", error_msg[:120])
+            try:
+                worker_result_files: List[Path] = []
+                worker_failures: List[Tuple[str, str]] = []
+
+                from urllib.parse import urlparse as _urlparse
+                _first_host = (_urlparse(first_url_for_error).netloc or "").lower()
+
+                if requested_kind == "image":
+                    # Para imágenes, usar extract
+                    if "tiktok.com" in _first_host:
+                        wk_items = worker_extract_tiktok_photos(first_url_for_error, timeout=25)
+                    elif "instagram.com" in _first_host:
+                        wk_items = worker_extract_instagram(first_url_for_error, timeout=25)
+                    else:
+                        wk_items = call_worker_extract(first_url_for_error, timeout=25)
+
+                    if wk_items:
+                        # Descargar las imágenes del worker al VPS
+                        from pathlib import Path as _Path
+                        import os as _os
+                        from datetime import datetime as _dt
+                        _dl_root = _Path("downloads")
+                        _dl_root.mkdir(exist_ok=True)
+                        _tmp_name = f"session_{_dt.now().strftime('%Y%m%d%H%M%S')}_{_os.urandom(4).hex()}"
+                        _out_dir = _dl_root / _tmp_name / "out"
+                        _out_dir.mkdir(parents=True, exist_ok=True)
+                        worker_result_files, worker_failures = download_worker_files_to_local(
+                            [{"url": it.get("url"), "name": f"image_{i+1}.jpg"} for i, it in enumerate(wk_items)],
+                            _out_dir,
+                            timeout=30,
+                        )
+                else:
+                    # Para video/audio, usar download
+                    wk_kind = requested_kind
+                    wk_fmt = fmt or ("mp4" if requested_kind == "video" else "mp3")
+                    wk_quality = detail or "720"
+
+                    if "youtube.com" in _first_host or "youtu.be" in _first_host:
+                        wk_files = worker_download_youtube(
+                            first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=90
+                        )
+                    elif "instagram.com" in _first_host:
+                        wk_files = worker_download_instagram(
+                            first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=60
+                        )
+                    else:
+                        wk_files = call_worker_download(
+                            first_url_for_error, kind=wk_kind, fmt=wk_fmt, quality=wk_quality, timeout=60
+                        )
+
+                    if wk_files:
+                        # Descargar archivos del worker al VPS
+                        from pathlib import Path as _Path
+                        import os as _os
+                        from datetime import datetime as _dt
+                        _dl_root = _Path("downloads")
+                        _dl_root.mkdir(exist_ok=True)
+                        _tmp_name = f"session_{_dt.now().strftime('%Y%m%d%H%M%S')}_{_os.urandom(4).hex()}"
+                        _out_dir = _dl_root / _tmp_name / "out"
+                        _out_dir.mkdir(parents=True, exist_ok=True)
+                        worker_result_files, worker_failures = download_worker_files_to_local(
+                            wk_files, _out_dir, timeout=90
+                        )
+
+                # Si el worker produjo archivos, retornar éxito
+                if worker_result_files:
+                    _DOWNLOAD_SEMAPHORE.release()
+                    _semaphore_released = True
+                    _log.info("[WORKER] download fallback ok: %d files", len(worker_result_files))
+
+                    files_out: List[Dict[str, str]] = []
+                    history_files_out: List[Dict[str, str]] = []
+                    for p in worker_result_files:
+                        pp = p.resolve()
+                        item_kind = _file_kind_for_path(pp)
+                        served = pp
+                        if item_kind == "video":
+                            try:
+                                served = _copy_for_preview(pp)
+                            except Exception:
+                                served = pp
+                        files_out.append({"name": pp.name, "url": _rel_to_url(served), "kind": item_kind})
+                        try:
+                            history_files_out.append(
+                                {"name": pp.name, "relpath": _path_to_relstr(served), "kind": item_kind}
+                            )
+                        except Exception:
+                            pass
+
+                    ok_count = len(worker_result_files)
+                    _append_history(
+                        {
+                            "ts": int(time.time()),
+                            "kind": requested_kind,
+                            "urls": 1,
+                            "ok": ok_count,
+                            "fail": len(worker_failures),
+                            "files": history_files_out,
+                            "worker": True,
+                        },
+                        session_id=session_id,
+                    )
+
+                    return jsonify(
+                        {
+                            "tone": "success",
+                            "message": f"Se descargaron {ok_count} archivo(s) via worker externo.",
+                            "files": files_out,
+                            "failures": [{"url": u, "reason": r} for (u, r) in worker_failures],
+                        }
+                    )
+                else:
+                    _log.info("[WORKER] download fallback: worker returned no files")
+            except Exception as wk_exc:
+                _log.warning("[WORKER] download fallback failed: %s", wk_exc)
+
         status = 500
         if requested_kind in ("audio", "video") and _is_instagram_post(first_url_for_error):
             status = 400
         return jsonify({"message": _friendly_error(first_url_for_error, e, bool(cookies_path)), "tone": "error"}), status
     finally:
-        _DOWNLOAD_SEMAPHORE.release()
+        if not _semaphore_released:
+            _DOWNLOAD_SEMAPHORE.release()
 
     _log.info("download_end ok=%s fail=%s", len(generated or []), len(failures or []))
 
@@ -1395,6 +1579,92 @@ def api_download():
 
     ok_count = len(generated)
     fail_count = len(failures or [])
+
+    # --- WORKER FALLBACK: 0 archivos generados con errores de bloqueo ---
+    if ok_count == 0 and fail_count > 0 and worker_enabled():
+        # Verificar si algún failure parece error de bloqueo
+        failure_texts = " ".join(r for (_, r) in (failures or []))
+        if is_blocking_error(failure_texts):
+            _log.info("[WORKER] post-download fallback: 0 files, blocking errors detected")
+            print(f"[WORKER] fallback reason={failure_texts[:120]}", flush=True)
+            try:
+                from urllib.parse import urlparse as _urlparse2
+                _first_host2 = (_urlparse2(first_url_for_error).netloc or "").lower()
+
+                wk_result_files: List[Path] = []
+                wk_fail: List[Tuple[str, str]] = []
+
+                if requested_kind == "image":
+                    if "tiktok.com" in _first_host2:
+                        wk_items = worker_extract_tiktok_photos(first_url_for_error, timeout=25)
+                    elif "instagram.com" in _first_host2:
+                        wk_items = worker_extract_instagram(first_url_for_error, timeout=25)
+                    else:
+                        wk_items = call_worker_extract(first_url_for_error, timeout=25)
+                    if wk_items:
+                        from pathlib import Path as _Path2
+                        import os as _os2
+                        from datetime import datetime as _dt2
+                        _dl_root2 = _Path2("downloads")
+                        _dl_root2.mkdir(exist_ok=True)
+                        _tmp2 = f"session_{_dt2.now().strftime('%Y%m%d%H%M%S')}_{_os2.urandom(4).hex()}"
+                        _out2 = _dl_root2 / _tmp2 / "out"
+                        _out2.mkdir(parents=True, exist_ok=True)
+                        wk_result_files, wk_fail = download_worker_files_to_local(
+                            [{"url": it.get("url"), "name": f"image_{i+1}.jpg"} for i, it in enumerate(wk_items)],
+                            _out2, timeout=30,
+                        )
+                else:
+                    wk_kind2 = requested_kind
+                    wk_fmt2 = fmt or ("mp4" if requested_kind == "video" else "mp3")
+                    wk_q2 = detail or "720"
+                    if "youtube.com" in _first_host2 or "youtu.be" in _first_host2:
+                        wk_dl = worker_download_youtube(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=90)
+                    elif "instagram.com" in _first_host2:
+                        wk_dl = worker_download_instagram(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=60)
+                    else:
+                        wk_dl = call_worker_download(first_url_for_error, kind=wk_kind2, fmt=wk_fmt2, quality=wk_q2, timeout=60)
+                    if wk_dl:
+                        from pathlib import Path as _Path2
+                        import os as _os2
+                        from datetime import datetime as _dt2
+                        _dl_root2 = _Path2("downloads")
+                        _dl_root2.mkdir(exist_ok=True)
+                        _tmp2 = f"session_{_dt2.now().strftime('%Y%m%d%H%M%S')}_{_os2.urandom(4).hex()}"
+                        _out2 = _dl_root2 / _tmp2 / "out"
+                        _out2.mkdir(parents=True, exist_ok=True)
+                        wk_result_files, wk_fail = download_worker_files_to_local(wk_dl, _out2, timeout=90)
+
+                if wk_result_files:
+                    _log.info("[WORKER] post-download fallback ok: %d files", len(wk_result_files))
+                    # Reemplazar los resultados
+                    generated = wk_result_files
+                    failures = wk_fail
+                    ok_count = len(generated)
+                    fail_count = len(failures)
+                    # Recalcular files y zip
+                    files = []
+                    history_files = []
+                    for p in generated:
+                        pp = p.resolve()
+                        item_kind = _file_kind_for_path(pp)
+                        served = pp
+                        if item_kind == "video":
+                            try:
+                                served = _copy_for_preview(pp)
+                            except Exception:
+                                served = pp
+                        files.append({"name": pp.name, "url": _rel_to_url(served), "kind": item_kind})
+                        try:
+                            history_files.append({"name": pp.name, "relpath": _path_to_relstr(served), "kind": item_kind})
+                        except Exception:
+                            pass
+                    zip_path = None
+                    zip_url = None
+                    zip_obj = None
+            except Exception as wk_exc2:
+                _log.warning("[WORKER] post-download fallback failed: %s", wk_exc2)
+
     if ok_count > 0 and fail_count == 0:
         tone = "success"
         message = f"Se descargaron {ok_count} archivo(s)."
@@ -1434,6 +1704,7 @@ def api_download():
 
 if __name__ == "__main__":
     _start_autodestruct_daemon()
+    log_worker_status()
     port = int(os.environ.get("PORT", "7860"))
     debug = os.environ.get("FLASK_DEBUG", "").strip() in ("1", "true", "yes")
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)
