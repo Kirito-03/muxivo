@@ -629,73 +629,225 @@ function scheduleDetect() {
   }, 220)
 }
 
-function renderArchive(zip, files, failures) {
-  currentDownload = { zip: zip || null, files: files || [], failures: failures || [] }
+function renderArchive(data) {
+  // data puede ser la respuesta directa de /api/download o un item de historial
+  currentDownload = {
+    label:    data.label    || "",
+    zip:      data.zip      || null,
+    files:    data.files    || [],
+    failures: data.failures || [],
+    total:    data.total    != null ? data.total    : (data.files || []).length + (data.failures || []).length,
+    success:  data.success  != null ? data.success  : (data.files || []).length,
+    failed:   data.failed   != null ? data.failed   : (data.failures || []).length,
+  }
   renderArchiveView()
 }
 
+// ── KIND icons para el Archive ──
+const KIND_ICON = {
+  audio: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><path d="M9 2v9.354A2.5 2.5 0 1 1 7.5 9.1V4.5L3 5.5V12a2.5 2.5 0 1 1-1.5-2.3V5l7.5-2V2H9z" fill="currentColor"/></svg>`,
+  video: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><path d="M2 4a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H2zm9 1.5 3-1.5v8l-3-1.5V5.5z" fill="currentColor"/></svg>`,
+  image: `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><rect x="1" y="2" width="14" height="12" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="5.5" cy="6.5" r="1.5" fill="currentColor"/><path d="M1 11l3.5-4 3 3 2-2 4.5 5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>`,
+  file:  `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 2v3h3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>`,
+  zip:   `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 2v3h3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 6v4M6 9h2M6 7h2M7 11v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+}
+
+function _kindIcon(kind) {
+  return KIND_ICON[kind] || KIND_ICON.file
+}
+
+function _ts(ts) {
+  if (!ts) return ""
+  try {
+    const d = new Date(Number(ts) * 1000)
+    const pad = (n) => String(n).padStart(2, "0")
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  } catch {
+    return ""
+  }
+}
+
 function renderArchiveView() {
+  // Limpiar todo
   zipRow.innerHTML = ""
   archiveList.innerHTML = ""
   failuresEl.innerHTML = ""
 
-  const seenUrls = new Set()
-  const byUrl = new Map()
+  let hasAnyContent = false
 
-  const currentZip = currentDownload && currentDownload.zip && currentDownload.zip.url ? currentDownload.zip : null
-  const currentFiles = (currentDownload && currentDownload.files) ? currentDownload.files : []
-  const currentFailures = (currentDownload && currentDownload.failures) ? currentDownload.failures : []
-
-  const historyZip =
-    currentZip ||
-    (historyItems || []).map((it) => it && it.zip).find((z) => z && z.url) ||
-    null
-
-  if (historyZip && historyZip.url) {
-    const a = document.createElement("a")
-    a.href = historyZip.url
-    a.className = "ghost"
-    a.download = historyZip.name || "download.zip"
-    a.textContent = "DESCARGAR ZIP"
-    zipRow.appendChild(a)
+  // ── Renderizar descarga actual (si existe) ──
+  if (currentDownload && (currentDownload.files.length > 0 || currentDownload.failures.length > 0)) {
+    hasAnyContent = true
+    const section = _buildArchiveSection(currentDownload, /* isCurrent= */ true)
+    archiveList.appendChild(section)
   }
 
-  function addRow(item, mode) {
-    if (!item || !item.url) return
-    const url = item.url
-    if (seenUrls.has(url)) return
-    seenUrls.add(url)
-    byUrl.set(url, item)
-
-    const li = document.createElement("li")
-    const a = document.createElement("a")
-    a.href = url
-    a.download = item.name || ""
-    if (mode === "play") a.dataset.play = "1"
-    const name = document.createElement("span")
-    name.className = "fname"
-    name.textContent = item.name || url
-    a.appendChild(name)
-    li.appendChild(a)
-    archiveList.appendChild(li)
-  }
-
-  for (const f of currentFiles) addRow(f, "play")
-
+  // ── Renderizar historial de sesión ──
   for (const h of historyItems || []) {
-    const files = (h && h.files) ? h.files : []
-    for (const f of files) addRow(f, "play")
+    if (!h) continue
+    const hFiles   = h.files    || []
+    const hFails   = h.failures || []
+    const hZip     = h.zip      || null
+    if (hFiles.length === 0 && hFails.length === 0 && !hZip) continue
+
+    const hData = {
+      label:    h.label   || "",
+      ts:       h.ts      || null,
+      zip:      hZip,
+      files:    hFiles,
+      failures: hFails,
+      total:    h.total   != null ? h.total   : hFiles.length + hFails.length,
+      success:  h.ok      != null ? h.ok      : hFiles.length,
+      failed:   h.fail    != null ? h.fail    : hFails.length,
+    }
+    hasAnyContent = true
+    const section = _buildArchiveSection(hData, /* isCurrent= */ false)
+    archiveList.appendChild(section)
   }
 
-  if (currentFailures && currentFailures.length) {
-    const lines = currentFailures.slice(0, 12).map((x) => `${x.url} — ${x.reason}`)
-    failuresEl.textContent = lines.join("\n")
+  if (archiveEmpty) archiveEmpty.classList.toggle("is-hidden", hasAnyContent)
+  window.__archiveByUrl = _buildArchiveUrlMap()
+}
+
+function _buildArchiveUrlMap() {
+  const map = new Map()
+  // Mapear desde currentDownload
+  if (currentDownload) {
+    for (const f of currentDownload.files || []) {
+      if (f && f.url) map.set(f.url, f)
+    }
+  }
+  // Mapear desde historial
+  for (const h of historyItems || []) {
+    for (const f of h.files || []) {
+      if (f && f.url) map.set(f.url, f)
+    }
+  }
+  return map
+}
+
+function _buildArchiveSection(data, isCurrent) {
+  const section = document.createElement("div")
+  section.className = "archive-section" + (isCurrent ? " archive-section--current" : "")
+
+  // ── Header del grupo ──
+  const header = document.createElement("div")
+  header.className = "archive-section-header"
+
+  const labelEl = document.createElement("span")
+  labelEl.className = "archive-section-label"
+  labelEl.textContent = data.label || "Descarga"
+
+  const metaEl = document.createElement("span")
+  metaEl.className = "archive-section-meta"
+
+  const parts = []
+  if (data.success != null && data.success > 0) {
+    parts.push(`<span class="archive-meta-ok">${data.success} ok</span>`)
+  }
+  if (data.failed != null && data.failed > 0) {
+    parts.push(`<span class="archive-meta-fail">${data.failed} fallo(s)</span>`)
+  }
+  if (data.ts) {
+    parts.push(`<span class="archive-meta-time">${_ts(data.ts)}</span>`)
+  }
+  metaEl.innerHTML = parts.join(" · ")
+
+  header.appendChild(labelEl)
+  header.appendChild(metaEl)
+  section.appendChild(header)
+
+  // ── Lista de archivos exitosos ──
+  if ((data.files || []).length > 0) {
+    const ul = document.createElement("ul")
+    ul.className = "archive-file-list"
+
+    for (const f of data.files) {
+      if (!f || !f.url) continue
+      const li = document.createElement("li")
+      li.className = "archive-file-item archive-file-item--done"
+
+      const iconSpan = document.createElement("span")
+      iconSpan.className = "archive-file-icon"
+      iconSpan.innerHTML = _kindIcon(f.kind)
+
+      const nameSpan = document.createElement("span")
+      nameSpan.className = "archive-file-name"
+      nameSpan.textContent = f.name || f.url
+      nameSpan.title = f.name || f.url
+
+      const dlBtn = document.createElement("a")
+      dlBtn.href = f.url + "?download=1"
+      dlBtn.download = f.name || ""
+      dlBtn.className = "archive-file-dl"
+      dlBtn.title = "Descargar"
+      dlBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="14" height="14"><path d="M8 2v8M5 7l3 3 3-3M2 13h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+
+      // Click en el nombre → playback
+      const playLink = document.createElement("a")
+      playLink.href = f.url
+      playLink.className = "archive-file-play-link"
+      playLink.dataset.play = "1"
+      playLink.appendChild(iconSpan)
+      playLink.appendChild(nameSpan)
+
+      li.appendChild(playLink)
+      li.appendChild(dlBtn)
+      ul.appendChild(li)
+    }
+    section.appendChild(ul)
   }
 
-  const hasContent = (historyZip && historyZip.url) || archiveList.childElementCount > 0 || (currentFailures && currentFailures.length)
-  if (archiveEmpty) archiveEmpty.classList.toggle("is-hidden", hasContent)
+  // ── Fallidos ──
+  if ((data.failures || []).length > 0) {
+    const failList = document.createElement("ul")
+    failList.className = "archive-fail-list"
 
-  window.__archiveByUrl = byUrl
+    for (const fail of data.failures) {
+      if (!fail) continue
+      const li = document.createElement("li")
+      li.className = "archive-file-item archive-file-item--failed"
+
+      const iconSpan = document.createElement("span")
+      iconSpan.className = "archive-file-icon archive-file-icon--fail"
+      iconSpan.innerHTML = `<svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" width="13" height="13"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v3.5M8 11h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`
+
+      const textDiv = document.createElement("div")
+      textDiv.className = "archive-fail-text"
+
+      const labelEl2 = document.createElement("span")
+      labelEl2.className = "archive-fail-label"
+      labelEl2.textContent = fail.label || "archivo"
+
+      const reasonEl = document.createElement("span")
+      reasonEl.className = "archive-fail-reason"
+      reasonEl.textContent = fail.reason || "Error desconocido"
+
+      textDiv.appendChild(labelEl2)
+      textDiv.appendChild(reasonEl)
+      li.appendChild(iconSpan)
+      li.appendChild(textDiv)
+      failList.appendChild(li)
+    }
+    section.appendChild(failList)
+  }
+
+  // ── Botón ZIP ──
+  if (data.zip && data.zip.url) {
+    const zipWrap = document.createElement("div")
+    zipWrap.className = "archive-zip-row"
+
+    const za = document.createElement("a")
+    za.href = data.zip.url
+    za.className = "archive-zip-btn"
+    za.download = data.zip.name || "download.zip"
+    za.innerHTML = `${_kindIcon("zip")}<span>DESCARGAR ZIP</span><span class="archive-zip-name">${data.zip.name || ""}</span>`
+
+    zipWrap.appendChild(za)
+    section.appendChild(zipWrap)
+  }
+
+  return section
 }
 
 async function loadHistory() {
@@ -800,7 +952,8 @@ async function startDownload() {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { setStatus(data.message || "Error al descargar.", "error"); return }
     setStatus(data.message || "Listo.", data.tone)
-    renderArchive(data.zip, data.files, data.failures)
+    // Pasar el objeto completo al archive (nueva estructura)
+    renderArchive(data)
     renderPlayback(data.files)
     if (archiveAcc) archiveAcc.open = false
     if (playbackAcc) playbackAcc.open = false

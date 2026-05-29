@@ -378,6 +378,104 @@ def _file_kind_for_path(path: Path) -> str:
     return "file"
 
 
+def _clean_zip_name(url: str, n: int) -> str:
+    """Genera un nombre de ZIP limpio basado en plataforma e ID extraído de la URL.
+    Ejemplos: instagram_ABC123.zip, tiktok_7123456789.zip, youtube_dQw4w9WgXcQ.zip
+    """
+    try:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+
+        # Instagram /p/<shortcode>/
+        if "instagram.com" in host:
+            m = re.search(r"/p/([A-Za-z0-9_-]+)", path)
+            if m:
+                return f"instagram_{m.group(1)[:32]}.zip"
+            m2 = re.search(r"/reel/([A-Za-z0-9_-]+)", path)
+            if m2:
+                return f"instagram_reel_{m2.group(1)[:32]}.zip"
+            return "instagram_gallery.zip"
+
+        # TikTok /video/<id> or /photo/<id>
+        if "tiktok.com" in host:
+            m = re.search(r"/(?:video|photo)/(\d+)", path)
+            if m:
+                prefix = "tiktok_photo" if "/photo/" in path else "tiktok"
+                return f"{prefix}_{m.group(1)[:24]}.zip"
+            return "tiktok_gallery.zip"
+
+        # YouTube ?v=<video_id> or youtu.be/<video_id>
+        if "youtube.com" in host or "youtu.be" in host:
+            if host == "youtu.be":
+                vid = path.strip("/").split("/")[0][:16]
+                if vid:
+                    return f"youtube_{vid}.zip"
+            else:
+                qs = parse_qs(parsed.query)
+                vid = (qs.get("v") or [""])[0][:16]
+                if vid:
+                    return f"youtube_{vid}.zip"
+            return "youtube_playlist.zip"
+
+        # Generic: use domain slug + count
+        domain_slug = re.sub(r"[^a-zA-Z0-9]", "_", host.replace("www.", ""))[:20]
+        return f"{domain_slug}_{n}files.zip"
+    except Exception:
+        return f"media_{n}files.zip"
+
+
+def _session_label(url: str, kind: str, n: int) -> str:
+    """Etiqueta legible para el grupo de descarga en el Archive."""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        path = parsed.path or ""
+
+        if "instagram.com" in host:
+            m = re.search(r"/p/([A-Za-z0-9_-]+)", path)
+            if m:
+                sc = m.group(1)[:12]
+                suffix = f" — {n} archivo(s)" if n > 1 else ""
+                return f"Instagram Gallery /{sc}/{suffix}"
+            m2 = re.search(r"/reel/([A-Za-z0-9_-]+)", path)
+            if m2:
+                return f"Instagram Reel /{m2.group(1)[:12]}/"
+            return f"Instagram — {n} archivo(s)"
+
+        if "tiktok.com" in host:
+            m = re.search(r"/photo/(\d+)", path)
+            if m:
+                return f"TikTok Photo /{m.group(1)[-8:]}/ — {n} imagen(es)"
+            m2 = re.search(r"/video/(\d+)", path)
+            if m2:
+                return f"TikTok Video /{m2.group(1)[-8:]}/"
+            return f"TikTok — {n} archivo(s)"
+
+        if "youtube.com" in host or "youtu.be" in host:
+            kind_label = {"audio": "Audio", "video": "Video"}.get(kind, "Media")
+            return f"YouTube {kind_label} — {n} archivo(s)"
+
+        domain_slug = (host.replace("www.", "") or "media")[:20]
+        return f"{domain_slug} — {n} archivo(s)"
+    except Exception:
+        return f"Descarga — {n} archivo(s)"
+
+
+def _clean_filename(name: str) -> str:
+    """Acorta nombres de archivo muy largos manteniendo extensión. Máx 60 chars en stem."""
+    n = str(name or "").strip()
+    if not n:
+        return n
+    stem, _, ext = n.rpartition(".")
+    if not stem:
+        return n[:80]
+    stem_clean = stem[:60].rstrip(" ._-")
+    return f"{stem_clean}.{ext}" if ext else stem_clean[:80]
+
+
 def _copy_for_preview(src: Path) -> Path:
     suffix = src.suffix or ".bin"
     dst = PREVIEW_DIR / f"preview_{os.urandom(4).hex()}{suffix}"
@@ -813,6 +911,19 @@ def api_history():
                     "name": (f.get("name") or resolved.name),
                     "url": _rel_to_url(resolved),
                     "kind": (f.get("kind") or _file_kind_for_path(resolved)),
+                    "status": "done",
+                }
+            )
+
+        # Recuperar failures del historial
+        failures_hist: List[Dict[str, str]] = []
+        for fail in entry.get("failures") or []:
+            if not isinstance(fail, dict):
+                continue
+            failures_hist.append(
+                {
+                    "label": str(fail.get("label") or fail.get("url") or "archivo"),
+                    "reason": str(fail.get("reason") or "Error desconocido"),
                 }
             )
 
@@ -821,16 +932,25 @@ def api_history():
         if zip_rel:
             resolved_zip = _try_resolve_allowed_relpath(str(zip_rel))
             if resolved_zip:
-                zip_obj = {"name": resolved_zip.name, "url": _rel_to_url(resolved_zip), "kind": "zip"}
+                zip_obj = {
+                    "name": resolved_zip.name,
+                    "url": _rel_to_url(resolved_zip),
+                    "kind": "zip",
+                }
 
+        ok_n = int(entry.get("ok") or 0)
+        fail_n = int(entry.get("fail") or 0)
         items.append(
             {
                 "ts": entry.get("ts"),
                 "kind": entry.get("kind"),
-                "ok": entry.get("ok"),
-                "fail": entry.get("fail"),
+                "label": entry.get("label") or "",
+                "ok": ok_n,
+                "fail": fail_n,
+                "total": ok_n + fail_n,
                 "zip": zip_obj,
                 "files": files_out,
+                "failures": failures_hist,
             }
         )
 
@@ -1515,22 +1635,35 @@ def api_download():
                                 served = _copy_for_preview(pp)
                             except Exception:
                                 served = pp
-                        files_out.append({"name": pp.name, "url": _rel_to_url(served), "kind": item_kind})
+                        clean_name = _clean_filename(pp.name)
+                        files_out.append({
+                            "name": clean_name,
+                            "url": _rel_to_url(served),
+                            "kind": item_kind,
+                            "status": "done",
+                        })
                         try:
                             history_files_out.append(
-                                {"name": pp.name, "relpath": _path_to_relstr(served), "kind": item_kind}
+                                {"name": clean_name, "relpath": _path_to_relstr(served), "kind": item_kind}
                             )
                         except Exception:
                             pass
 
                     ok_count = len(worker_result_files)
+                    wk_fail_out = [
+                        {"label": f"archivo {i+1}", "reason": r}
+                        for i, (u, r) in enumerate(worker_failures)
+                    ]
+                    session_lbl = _session_label(first_url_for_error, requested_kind, ok_count)
                     _append_history(
                         {
                             "ts": int(time.time()),
                             "kind": requested_kind,
+                            "label": session_lbl,
                             "urls": 1,
                             "ok": ok_count,
                             "fail": len(worker_failures),
+                            "failures": wk_fail_out,
                             "files": history_files_out,
                             "worker": True,
                         },
@@ -1539,10 +1672,16 @@ def api_download():
 
                     return jsonify(
                         {
+                            "ok": True,
                             "tone": "success",
                             "message": f"Se descargaron {ok_count} archivo(s) via worker externo.",
+                            "total": ok_count + len(worker_failures),
+                            "success": ok_count,
+                            "failed": len(worker_failures),
+                            "label": session_lbl,
                             "files": files_out,
-                            "failures": [{"url": u, "reason": r} for (u, r) in worker_failures],
+                            "zip": None,
+                            "failures": wk_fail_out,
                         }
                     )
                 else:
@@ -1571,16 +1710,41 @@ def api_download():
                 served = _copy_for_preview(pp)
             except Exception:
                 served = pp
-        files.append({"name": pp.name, "url": _rel_to_url(served), "kind": item_kind})
+        clean_name = _clean_filename(pp.name)
+        files.append({"name": clean_name, "url": _rel_to_url(served), "kind": item_kind, "status": "done"})
         try:
             history_files.append(
-                {"name": pp.name, "relpath": _path_to_relstr(served), "kind": item_kind}
+                {"name": clean_name, "relpath": _path_to_relstr(served), "kind": item_kind}
             )
         except Exception:
             pass
 
-    zip_url = _rel_to_url(Path(zip_path).resolve()) if zip_path else None
-    zip_obj = {"name": Path(zip_path).name, "url": zip_url, "kind": "zip"} if zip_url else None
+    # Generar ZIP con nombre limpio si hay más de 1 archivo
+    clean_zip_name = _clean_zip_name(first_url_for_error, len(generated))
+    zip_url: Optional[str] = None
+    zip_obj: Optional[Dict[str, Any]] = None
+    zip_relpath_str: Optional[str] = None
+
+    if zip_path:
+        try:
+            original_zip = Path(zip_path).resolve()
+            if original_zip.exists():
+                # Renombrar el ZIP al nombre limpio
+                clean_zip_dest = original_zip.parent / clean_zip_name
+                # Evitar colisión
+                if clean_zip_dest.exists() and clean_zip_dest != original_zip:
+                    clean_zip_dest = original_zip.parent / f"{clean_zip_dest.stem}_{os.urandom(3).hex()}.zip"
+                if original_zip != clean_zip_dest:
+                    original_zip.rename(clean_zip_dest)
+                final_zip = clean_zip_dest
+            else:
+                final_zip = original_zip
+        except Exception:
+            final_zip = Path(zip_path).resolve()
+
+        zip_url = _rel_to_url(final_zip)
+        zip_relpath_str = _path_to_relstr(final_zip)
+        zip_obj = {"name": final_zip.name, "url": zip_url, "kind": "zip"}
 
     ok_count = len(generated)
     fail_count = len(failures or [])
@@ -1649,7 +1813,7 @@ def api_download():
                     failures = wk_fail
                     ok_count = len(generated)
                     fail_count = len(failures)
-                    # Recalcular files y zip
+                    # Recalcular files
                     files = []
                     history_files = []
                     for p in generated:
@@ -1661,14 +1825,16 @@ def api_download():
                                 served = _copy_for_preview(pp)
                             except Exception:
                                 served = pp
-                        files.append({"name": pp.name, "url": _rel_to_url(served), "kind": item_kind})
+                        clean_name = _clean_filename(pp.name)
+                        files.append({"name": clean_name, "url": _rel_to_url(served), "kind": item_kind, "status": "done"})
                         try:
-                            history_files.append({"name": pp.name, "relpath": _path_to_relstr(served), "kind": item_kind})
+                            history_files.append({"name": clean_name, "relpath": _path_to_relstr(served), "kind": item_kind})
                         except Exception:
                             pass
                     zip_path = None
                     zip_url = None
                     zip_obj = None
+                    zip_relpath_str = None
             except Exception as wk_exc2:
                 _log.warning("[WORKER] post-download fallback failed: %s", wk_exc2)
 
@@ -1682,26 +1848,42 @@ def api_download():
         tone = "warning"
         message = "No se descargó ningún archivo."
 
+    # Estructurar failures con label
+    failures_out = [
+        {
+            "label": _clean_filename(u) if u else f"archivo {i+1}",
+            "reason": r,
+        }
+        for i, (u, r) in enumerate(failures or [])
+    ]
+
+    session_lbl = _session_label(first_url_for_error, requested_kind, ok_count)
+
     _append_history(
         {
             "ts": int(time.time()),
             "kind": requested_kind,
+            "label": session_lbl,
             "urls": len([l for l in filtered.splitlines() if l.strip()]),
             "ok": ok_count,
             "fail": fail_count,
             "zip": str(zip_path) if zip_path else None,
-            "zip_relpath": _path_to_relstr(Path(zip_path)) if zip_path else None,
+            "zip_relpath": zip_relpath_str,
             "files": history_files,
+            "failures": failures_out,
         },
         session_id=session_id,
     )
 
-    failures_out = [{"url": u, "reason": r} for (u, r) in (failures or [])]
-
     return jsonify(
         {
+            "ok": ok_count > 0,
             "tone": tone,
             "message": message,
+            "total": ok_count + fail_count,
+            "success": ok_count,
+            "failed": fail_count,
+            "label": session_lbl,
             "zip": zip_obj,
             "files": files,
             "failures": failures_out,
