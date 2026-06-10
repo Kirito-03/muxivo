@@ -1492,10 +1492,11 @@ def download_media():
 
         cmd = [
             sys.executable, "-m", "yt_dlp",
-            "--no-playlist", "--no-warnings", "--quiet",
+            "--no-playlist", "--no-warnings",
             "--socket-timeout", "30",
             "--retries", "3",
             "--fragment-retries", "3",
+            "--no-check-certificates",  # evita errores SSL en Android/Termux
             "-o", out_tmpl,
         ]
 
@@ -1513,12 +1514,16 @@ def download_media():
 
         if kind == "audio":
             if platform in ("tiktok", "facebook"):
-                # TikTok / Facebook: formato permisivo (evita errores de formato)
-                cmd += ["-f", "bestaudio/best"]
+                # TikTok / Facebook: forzar descarga via webpage + formato permisivo
+                cmd += [
+                    "--extractor-args", "tiktok:webpage_download=1",
+                    "-f", "bestaudio/best",
+                ]
                 if ffmpeg_ok:
                     aq_map = {"360": "7", "720": "5", "1080": "2", "0": "0"}
                     aq = aq_map.get(quality, "5")
                     cmd += ["--extract-audio", "--audio-format", fmt or "mp3", "--audio-quality", aq]
+                # Sin ffmpeg: descarga en el formato nativo (m4a/mp4) que es igual de útil
             else:
                 # YouTube / SoundCloud / otros
                 cmd += ["-f", "bestaudio[ext=m4a]/bestaudio/best"]
@@ -1558,6 +1563,7 @@ def download_media():
 
         cmd.append(yt_url)
         print(f"[WORKER/download] start key={key} kind={kind} platform={platform}", flush=True)
+        print(f"[WORKER/download] cmd={' '.join(cmd)}", flush=True)
 
         # Snapshot de archivos antes de descargar
         try:
