@@ -8,6 +8,9 @@ const formatSelect  = el("formatSelect")
 const qualitySelect = el("qualitySelect")
 const downloadBtn   = el("downloadBtn")
 const downloadLabel = el("downloadLabel")
+const btnIconNormal  = el("btnIconNormal")
+const btnIconLoading = el("btnIconLoading")
+const btnIconSuccess = el("btnIconSuccess")
 const statusEl      = el("status")
 const archiveList   = el("archiveList")
 const archiveEmpty  = el("archiveEmpty")
@@ -105,6 +108,41 @@ function setLoading(loading) {
   downloadBtn.classList.toggle("is-loading", isLoading)
   downloadBtn.setAttribute("aria-busy", isLoading ? "true" : "false")
   if (downloadLabel) downloadLabel.textContent = "DESCARGAR"
+}
+
+// ── Button state controller ──
+let _btnResetTimer = null
+function setButtonState(state) {
+  // Limpiar timer previo de auto-reset
+  if (_btnResetTimer) { clearTimeout(_btnResetTimer); _btnResetTimer = null }
+
+  // Resetear todos los íconos al estado base
+  if (btnIconNormal)  { btnIconNormal.classList.remove("d-none", "spin-anim", "pop-anim") }
+  if (btnIconLoading) { btnIconLoading.classList.remove("spin-anim"); btnIconLoading.classList.add("d-none") }
+  if (btnIconSuccess) { btnIconSuccess.classList.remove("pop-anim"); btnIconSuccess.classList.add("d-none") }
+
+  if (state === "loading") {
+    if (btnIconNormal)  btnIconNormal.classList.add("d-none")
+    if (btnIconLoading) { btnIconLoading.classList.remove("d-none"); btnIconLoading.classList.add("spin-anim") }
+    downloadBtn.disabled = true
+    downloadBtn.setAttribute("aria-busy", "true")
+    if (downloadLabel) downloadLabel.textContent = "DESCARGANDO..."
+
+  } else if (state === "success") {
+    if (btnIconNormal)  btnIconNormal.classList.add("d-none")
+    if (btnIconSuccess) { btnIconSuccess.classList.remove("d-none"); btnIconSuccess.classList.add("pop-anim") }
+    downloadBtn.disabled = true
+    downloadBtn.setAttribute("aria-busy", "false")
+    if (downloadLabel) downloadLabel.textContent = "COMPLETADO"
+    // Volver a normal tras 3s
+    _btnResetTimer = setTimeout(() => setButtonState("normal"), 3000)
+
+  } else {
+    // "normal"
+    downloadBtn.disabled = isLoading || downloadBlocked
+    downloadBtn.setAttribute("aria-busy", "false")
+    if (downloadLabel) downloadLabel.textContent = "DESCARGAR"
+  }
 }
 
 function setDownloadBlocked(blocked, reason) {
@@ -936,7 +974,8 @@ async function startDownload() {
     }
   }
 
-  setLoading(true)
+  isLoading = true
+  setButtonState("loading")
   setStatus("Descargando...", undefined)
 
   try {
@@ -944,14 +983,25 @@ async function startDownload() {
     if (kind === "image" && Array.isArray(currentImageCandidates) && currentImageCandidates.length > 0 && Array.isArray(selectedImageUrls)) {
       payload.image_urls = selectedImageUrls.slice(0, 200)
     }
-    const res  = await fetch("/api/download", {
+
+    // Ejecutar el fetch y un delay mínimo en paralelo para que el loader siempre sea visible
+    const minDelay = new Promise((r) => setTimeout(r, 500))
+    const fetchPromise = fetch("/api/download", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(payload),
     })
+
+    const [res] = await Promise.all([fetchPromise, minDelay])
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) { setStatus(data.message || "Error al descargar.", "error"); return }
+
+    if (!res.ok) {
+      setStatus(data.message || "Error al descargar.", "error")
+      setButtonState("normal")
+      return
+    }
     setStatus(data.message || "Listo.", data.tone)
+    setButtonState("success")
     // Pasar el objeto completo al archive (nueva estructura)
     renderArchive(data)
     renderPlayback(data.files)
@@ -960,8 +1010,9 @@ async function startDownload() {
     loadHistory().catch(() => {})
   } catch {
     setStatus("Error de red o servidor.", "error")
+    setButtonState("normal")
   } finally {
-    setLoading(false)
+    isLoading = false
   }
 }
 
@@ -1014,8 +1065,12 @@ syncUrlUI()
 loadHistory().catch(() => {})
 scheduleDetect()
 
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
+// ── Global loader fade-out + Service Worker ──
+window.addEventListener("load", () => {
+  const loader = document.getElementById("global-loader")
+  if (loader) loader.classList.add("loader-hidden")
+
+  if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/service-worker.js").catch(() => {})
-  })
-}
+  }
+})
