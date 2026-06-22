@@ -2,7 +2,7 @@
 worker_client.py — Cliente del worker de Termux (worker_universal.py)
 ======================================================================
 Lee las variables de entorno:
-  MEDIA_WORKER_URL       URL base del worker, ej: http://100.70.78.80:5001
+  MEDIA_WORKER_URL       URL base del worker, ej: http://100.94.219.56:5001
   MEDIA_WORKER_TOKEN     Token Bearer opcional
   MEDIA_WORKER_ENABLED   "0" para deshabilitar (default: habilitado si hay URL)
   MEDIA_WORKER_TIMEOUT   Timeout HTTP en segundos (default: 30)
