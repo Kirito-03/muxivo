@@ -25,7 +25,7 @@
 
 ## Descripción
 
-**Muxivo** es una aplicación web self-hosted para descargar audio, video e imágenes desde múltiples plataformas sociales. Funciona como una PWA instalable con interfaz dark premium, detección automática de contenido, selección de calidad dinámica y reproducción in-app.
+**Muxivo** es una aplicación web self-hosted para descargar audio, video e imágenes desde múltiples plataformas sociales. Funciona como una PWA instalable con interfaz dark, detección automática de contenido, selección de calidad dinámica y reproducción in-app.
 
 El backend usa **Flask** + **yt-dlp** + **Playwright** dentro de un contenedor Docker basado en la imagen oficial de Playwright, garantizando compatibilidad con plataformas que requieren JavaScript rendering o cookies de autenticación.
 
