@@ -795,6 +795,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route('/terms')
+def terms():
+    return render_template('terms.html')
+
+
 @app.get("/manifest.webmanifest")
 def manifest():
     p = (ROOT_DIR / "manifest.webmanifest").resolve()
