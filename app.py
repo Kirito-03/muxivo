@@ -551,8 +551,9 @@ def _cache_preview_image(url: str, *, referer: Optional[str] = None) -> Optional
 
 
 def _rel_to_url(path: Path) -> str:
+    import urllib.parse
     rel = path.resolve().relative_to(ROOT_DIR).as_posix()
-    return f"/files/{rel}"
+    return f"/files/{urllib.parse.quote(rel, safe='/')}"
 
 
 def _path_to_relstr(path: Path) -> str:
@@ -561,6 +562,8 @@ def _path_to_relstr(path: Path) -> str:
 
 def _try_resolve_allowed_relpath(relpath: str) -> Optional[Path]:
     try:
+        import urllib.parse
+        relpath = urllib.parse.unquote(relpath)
         rel = Path(relpath)
         if rel.is_absolute() or not rel.parts:
             return None
