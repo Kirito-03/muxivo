@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: muxivo_app
     restart: unless-stopped
     init: true
