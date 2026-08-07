@@ -7,10 +7,10 @@ services:
     container_name: muxivo_app
     restart: unless-stopped
     init: true
-    network_mode: "host"
     shm_size: "1gb"
     environment:
-      PORT: 4005
+      PORT: 7860
+      MEDIA_DOWNLOADER_IMPERSONATE: "1"
       TIKTOK_PHOTO_WORKER_URL: ${TIKTOK_PHOTO_WORKER_URL:-http://100.94.219.56:5001}
       TIKTOK_PHOTO_WORKER_TOKEN: ${TIKTOK_PHOTO_WORKER_TOKEN:-}
       MEDIA_WORKER_URL: ${MEDIA_WORKER_URL:-http://100.94.219.56:5001}
@@ -25,6 +25,8 @@ services:
       MAX_CONCURRENT_DOWNLOADS: ${MAX_CONCURRENT_DOWNLOADS:-2}
       MAX_REQ_PER_MIN: ${MAX_REQ_PER_MIN:-60}
       HISTORY_MAX_ITEMS: ${HISTORY_MAX_ITEMS:-30}
+    ports:
+      - "4005:7860"
     volumes:
       - media_downloads:/app/downloads
       - media_previews:/app/preview_cache
