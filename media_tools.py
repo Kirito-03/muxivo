@@ -963,8 +963,7 @@ def _resolve_short_url(u: str, timeout: int = 12) -> str:
         try:
             import requests
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "User-Agent": "curl/8.0.1",
             }
             # TikTok sometimes blocks HEAD or redirects properly only on GET for shortlinks
             resp = requests.get(u, headers=headers, allow_redirects=True, timeout=timeout)
@@ -975,9 +974,8 @@ def _resolve_short_url(u: str, timeout: int = 12) -> str:
 
         # Fallback a urllib si requests falla o no está instalado
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,*/*",
+            "User-Agent": "curl/8.0.1",
+            "Accept": "*/*",
         }
         req = urllib.request.Request(u, headers=headers, method="HEAD")
         ctx = ssl.create_default_context()
@@ -991,9 +989,8 @@ def _resolve_short_url(u: str, timeout: int = 12) -> str:
         # Si no puede resolver, intenta con GET (algunos servidores no soportan HEAD)
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,*/*",
+                "User-Agent": "curl/8.0.1",
+                "Accept": "*/*",
             }
             req = urllib.request.Request(u, headers=headers, method="GET")
             ctx = ssl.create_default_context()
@@ -1049,8 +1046,7 @@ def resolve_tiktok_url_for_detection(u: str, timeout: int = 12) -> Tuple[str, Op
         try:
             import requests
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "User-Agent": "curl/8.0.1",
             }
             resp = requests.get(url, headers=headers, allow_redirects=True, timeout=timeout)
             if resp.url and resp.url != url:
@@ -1059,9 +1055,8 @@ def resolve_tiktok_url_for_detection(u: str, timeout: int = 12) -> Tuple[str, Op
             pass
             
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,*/*",
+            "User-Agent": "curl/8.0.1",
+            "Accept": "*/*",
         }
         ctx = ssl.create_default_context()
         try:
