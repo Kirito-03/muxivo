@@ -960,6 +960,20 @@ def _resolve_short_url(u: str, timeout: int = 12) -> str:
         if host not in _SHORT_TIKTOK_HOSTS:
             return u
 
+        try:
+            import requests
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            }
+            # TikTok sometimes blocks HEAD or redirects properly only on GET for shortlinks
+            resp = requests.get(u, headers=headers, allow_redirects=True, timeout=timeout)
+            if resp.url and resp.url != u:
+                return resp.url
+        except Exception:
+            pass
+
+        # Fallback a urllib si requests falla o no está instalado
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1032,6 +1046,18 @@ def resolve_tiktok_url_for_detection(u: str, timeout: int = 12) -> Tuple[str, Op
         return u, None
 
     def _follow_redirects(url: str) -> str:
+        try:
+            import requests
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            }
+            resp = requests.get(url, headers=headers, allow_redirects=True, timeout=timeout)
+            if resp.url and resp.url != url:
+                return resp.url
+        except Exception:
+            pass
+            
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
