@@ -48,6 +48,8 @@ VERSION = "2.0.0"
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 5001
 
+WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
+
 DOWNLOADS_DIR = Path(os.getenv("WORKER_DOWNLOADS_DIR", "worker_downloads")).resolve()
 INDEX_PATH = (DOWNLOADS_DIR / "index.json").resolve()
 
@@ -70,9 +72,6 @@ DOWNLOAD_TIMEOUT_SEC = 180
 # TikTok shortlinks
 _TIKTOK_SHORTLINK_HOSTS = {"vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com"}
 
-# Facebook shortlinks
-_FACEBOOK_SHORTLINK_HOSTS = {"fb.com", "fb.watch"}
-
 # User-agents
 _UA_MOBILE = (
     "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
@@ -94,31 +93,83 @@ _HEADERS_DESKTOP = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.tiktok.com/",
 }
-_HEADERS_FACEBOOK = {
-    "User-Agent": _UA_DESKTOP,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.facebook.com/",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-Mode": "navigate",
-}
 
 # Extensions por tipo
 _AUDIO_EXTS = {"mp3", "m4a", "opus", "ogg", "wav", "flac", "aac"}
 _VIDEO_EXTS = {"mp4", "webm", "mkv", "mov", "avi", "flv", "ts"}
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "avif"}
 
-# Plataformas permitidas
+# Plataformas permitidas (facebook preparado pero deshabilitado)
 _ALLOWED_PLATFORMS = (
     "youtube.com", "youtu.be",
     "tiktok.com", "vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com",
     "instagram.com",
     "soundcloud.com", "sndcdn.com",
-    "facebook.com", "fb.com", "fb.watch", "m.facebook.com",
+    # "facebook.com",  # pendiente de implementación
 )
 
 app = Flask(__name__)
 
+from flask import g
+
+@app.before_request
+def before_request_hook():
+    g._req_t0 = time.time()
+    
+    # 1. Logging inicio request (estilo Muxivo)
+    try:
+        qs = request.query_string.decode("utf-8", errors="ignore") if request.query_string else ""
+        start_line = f">> {request.method} {request.path}"
+        if qs:
+            start_line += f"?{qs}"
+        body_preview = ""
+        if request.method in ("POST", "PUT", "PATCH"):
+            ct = (request.headers.get("Content-Type") or "").lower()
+            if "application/json" in ct:
+                data = request.get_json(silent=True)
+                if isinstance(data, dict):
+                    redacted = {}
+                    for k, v in data.items():
+                        s = str(v)
+                        redacted[str(k)] = (s[:150] + "...") if len(s) > 150 else s
+                    body_preview = f" body={redacted}"
+            else:
+                body_preview = " body=[non-json]"
+        print(start_line + body_preview, flush=True)
+    except Exception:
+        pass
+
+    # 2. Validación de Token
+    if request.path in ("/", "/health") or request.path.startswith("/files/"):
+        return None  # Rutas públicas permitidas sin token
+    
+    if WORKER_TOKEN:
+        auth_header = request.headers.get("Authorization", "")
+        token_header = request.headers.get("X-Worker-Token", "")
+        
+        req_token = ""
+        if auth_header.startswith("Bearer "):
+            req_token = auth_header[7:].strip()
+        if not req_token and token_header:
+            req_token = token_header.strip()
+            
+        if req_token != WORKER_TOKEN:
+            print(f"[WORKER] Acceso denegado. Token inválido en {request.path}", flush=True)
+            return jsonify({"ok": False, "message": "Unauthorized"}), 401
+
+@app.after_request
+def after_request_hook(resp):
+    try:
+        start = getattr(g, "_req_t0", None)
+        ms = int((time.time() - start) * 1000) if start else None
+        if ms is None:
+            line = f"{request.method} {request.path} -> {resp.status_code}"
+        else:
+            line = f"{request.method} {request.path} -> {resp.status_code} ({ms}ms)"
+        print(line, flush=True)
+    except Exception:
+        pass
+    return resp
 
 # ---------------------------------------------------------------------------
 # Utilidades básicas
@@ -189,7 +240,7 @@ def detect_platform(raw: str) -> str:
         return "instagram"
     if "soundcloud" in host or "sndcdn" in host:
         return "soundcloud"
-    if "facebook" in host or host in ("fb.com", "fb.watch"):
+    if "facebook" in host:
         return "facebook"
     return "unknown"
 
@@ -517,9 +568,10 @@ _IMAGE_CDN_RE = re.compile(
 
 _IMG_REJECT_PATTERNS = (
     "avatar", "icon", "emoji", "sticker", "placeholder",
-    "default_", "100x100", "168x168", "720x720",
+    "default_", "100x100", "150x150", "168x168", "720x720",
+    "72x72", "120x120", "200x200", "300x300", "p16-profile", "profile_pic",
     "musically", "/obj/musically", "watermark",
-    "/tos-alisg-i-", "profile", "logo", "badge",
+    "/tos-alisg-i-", "profile", "logo", "badge", "s150x150"
 )
 
 
@@ -794,19 +846,15 @@ def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]
 
 
 def _extract_instagram_gallery(url: str) -> List[str]:
-    """Extracción de imágenes Instagram vía yt-dlp (soporta carousels completos)."""
-    all_urls: List[str] = []
+    """Extracción básica de imágenes Instagram vía yt-dlp."""
     try:
-        # --yes-playlist permite obtener todos los items de un carousel/galería
         cmd = [
             sys.executable, "-m", "yt_dlp",
-            "--yes-playlist", "--no-warnings", "--quiet",
+            "--no-playlist", "--no-warnings", "--quiet",
             "--dump-json", url,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         if proc.returncode != 0:
-            stderr_tail = "\n".join((proc.stderr or "").splitlines()[-3:])
-            print(f"[WORKER/extract] instagram ytdlp rc={proc.returncode}: {stderr_tail}", flush=True)
             return []
         for line in (proc.stdout or "").splitlines():
             line = line.strip()
@@ -816,107 +864,27 @@ def _extract_instagram_gallery(url: str) -> List[str]:
                 data = json.loads(line)
             except Exception:
                 continue
-            # Priorizar thumbnails de alta resolución
+            # Buscar thumbnails / webpage_url
             thumbnails = data.get("thumbnails") or []
             if thumbnails:
-                # Ordenar por resolución descendente si tienen width/height
-                def _thumb_score(t: dict) -> int:
-                    return (t.get("width") or 0) + (t.get("height") or 0)
-                thumbnails_sorted = sorted(thumbnails, key=_thumb_score, reverse=True)
-                for t in thumbnails_sorted:
-                    u = t.get("url") or ""
-                    if u.startswith("http"):
-                        all_urls.append(u)
-                        break  # solo la mejor por item
-                continue
-            # Fallback: thumbnail principal del item
+                urls = [t.get("url") for t in thumbnails if t.get("url")]
+                if urls:
+                    filtered = []
+                    for u in urls:
+                        if not u.startswith("http"):
+                            continue
+                        low = u.lower()
+                        if any(p in low for p in _IMG_REJECT_PATTERNS):
+                            continue
+                        filtered.append(u)
+                    if filtered:
+                        return filtered
             thumb = data.get("thumbnail")
-            if thumb and thumb.startswith("http"):
-                all_urls.append(thumb)
+            if thumb and not any(p in thumb.lower() for p in _IMG_REJECT_PATTERNS):
+                return [thumb]
     except Exception as exc:
         print(f"[WORKER/extract] instagram ytdlp failed: {exc}", flush=True)
-    print(f"[WORKER/extract] instagram found={len(all_urls)} urls", flush=True)
-    return all_urls
-
-
-def _resolve_facebook_shortlink(url: str) -> str:
-    """Resuelve fb.com / fb.watch shortlinks a la URL completa de facebook.com."""
-    try:
-        parsed = urlparse(url)
-        if parsed.netloc.lower() not in _FACEBOOK_SHORTLINK_HOSTS:
-            return url
-        resp = requests.get(
-            url, headers=_HEADERS_FACEBOOK, allow_redirects=True, timeout=18
-        )
-        final = resp.url or url
-        print(f"[WORKER/extract] fb resolved {url} -> {final}", flush=True)
-        return final
-    except Exception as exc:
-        print(f"[WORKER/extract] fb shortlink resolve failed: {exc}", flush=True)
-        return url
-
-
-def _extract_facebook_gallery(url: str) -> List[str]:
-    """
-    Extrae imágenes de posts/álbumes de Facebook vía yt-dlp.
-    Soporta: posts con foto, reels con thumbnail, álbumes.
-    Nota: contenido privado requiere cookies; contenido público funciona sin ellas.
-    """
-    all_urls: List[str] = []
-    try:
-        # Resolver shortlinks
-        url = _resolve_facebook_shortlink(url)
-
-        cmd = [
-            sys.executable, "-m", "yt_dlp",
-            "--yes-playlist", "--no-warnings", "--quiet",
-            "--dump-json",
-            "--add-header", "Referer:https://www.facebook.com/",
-            "--add-header", f"User-Agent:{_UA_DESKTOP}",
-            url,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if proc.returncode != 0:
-            stderr_tail = "\n".join((proc.stderr or "").splitlines()[-3:])
-            print(f"[WORKER/extract] facebook ytdlp rc={proc.returncode}: {stderr_tail}", flush=True)
-            # Fallback: og:image del HTML
-            html, _ = _fetch_html(url, mobile=False)
-            if html:
-                og = _extract_og_image(html)
-                print(f"[WORKER/extract] facebook og_fallback={len(og)}", flush=True)
-                return _dedup_images(og)
-            return []
-
-        for line in (proc.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except Exception:
-                continue
-            # Priorizar thumbnails de alta resolución
-            thumbnails = data.get("thumbnails") or []
-            if thumbnails:
-                def _fb_thumb_score(t: dict) -> int:
-                    return (t.get("width") or 0) + (t.get("height") or 0)
-                thumbnails_sorted = sorted(thumbnails, key=_fb_thumb_score, reverse=True)
-                for t in thumbnails_sorted:
-                    u = t.get("url") or ""
-                    if u.startswith("http"):
-                        all_urls.append(u)
-                        break
-                continue
-            # Fallback: thumbnail del item
-            thumb = data.get("thumbnail")
-            if thumb and thumb.startswith("http"):
-                all_urls.append(thumb)
-
-    except Exception as exc:
-        print(f"[WORKER/extract] facebook ytdlp failed: {exc}", flush=True)
-
-    print(f"[WORKER/extract] facebook found={len(all_urls)} urls", flush=True)
-    return all_urls
+    return []
 
 
 def _extract_image_urls(raw_url: str) -> List[str]:
@@ -929,12 +897,8 @@ def _extract_image_urls(raw_url: str) -> List[str]:
         urls = _extract_instagram_gallery(raw_url)
         if urls:
             return urls
-    if platform == "facebook":
-        urls = _extract_facebook_gallery(raw_url)
-        if urls:
-            return urls
     # Fallback: og:image
-    html, _ = _fetch_html(raw_url, mobile=False)
+    html, _ = _fetch_html(raw_url, mobile=True)
     if html:
         return _dedup_images(_extract_og_image(html))
     return []
@@ -1233,7 +1197,7 @@ def health_check():
             "youtube": True,
             "tiktok": True,
             "instagram": True,
-            "facebook": True,
+            "facebook": False,  # pendiente
         },
     })
 
@@ -1331,7 +1295,7 @@ def search_music():
 @app.post("/extract")
 def extract_media():
     """
-    Extrae imágenes de TikTok gallery / Instagram / Facebook.
+    Extrae imágenes de TikTok gallery / Instagram.
     Body: { "url": "..." }
     """
     data = _safe_json()
@@ -1351,15 +1315,9 @@ def extract_media():
                 {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
                 for i, u in enumerate(img_urls)
             ]
-        elif platform == "facebook":
-            img_urls = _extract_facebook_gallery(raw_url)
-            items = [
-                {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
-                for i, u in enumerate(img_urls)
-            ]
         else:
             # Fallback genérico: og:image
-            html, _ = _fetch_html(raw_url, mobile=False)
+            html, _ = _fetch_html(raw_url, mobile=True)
             og_urls = _extract_og_image(html) if html else []
             items = [
                 {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
@@ -1492,47 +1450,22 @@ def download_media():
 
         cmd = [
             sys.executable, "-m", "yt_dlp",
-            "--no-playlist", "--no-warnings",
+            "--no-playlist", "--no-warnings", "--quiet",
             "--socket-timeout", "30",
             "--retries", "3",
             "--fragment-retries", "3",
-            "--no-check-certificates",  # evita errores SSL en Android/Termux
             "-o", out_tmpl,
         ]
 
-        # Headers específicos por plataforma
-        if platform == "tiktok":
-            cmd += [
-                "--add-header", "Referer:https://www.tiktok.com/",
-                "--add-header", f"User-Agent:{_UA_MOBILE}",
-            ]
-        elif platform == "facebook":
-            cmd += [
-                "--add-header", "Referer:https://www.facebook.com/",
-                "--add-header", f"User-Agent:{_UA_DESKTOP}",
-            ]
-
         if kind == "audio":
-            if platform in ("tiktok", "facebook"):
-                # TikTok / Facebook: forzar descarga via webpage + formato permisivo
-                cmd += [
-                    "--extractor-args", "tiktok:webpage_download=1",
-                    "-f", "bestaudio/best",
-                ]
-                if ffmpeg_ok:
-                    aq_map = {"360": "7", "720": "5", "1080": "2", "0": "0"}
-                    aq = aq_map.get(quality, "5")
-                    cmd += ["--extract-audio", "--audio-format", fmt or "mp3", "--audio-quality", aq]
-                # Sin ffmpeg: descarga en el formato nativo (m4a/mp4) que es igual de útil
-            else:
-                # YouTube / SoundCloud / otros
-                cmd += ["-f", "bestaudio[ext=m4a]/bestaudio/best"]
-                if fmt == "mp3" and ffmpeg_ok:
-                    aq_map = {"360": "7", "720": "5", "1080": "2", "0": "0"}
-                    aq = aq_map.get(quality, "5")
-                    cmd += ["--extract-audio", "--audio-format", "mp3", "--audio-quality", aq]
-                elif fmt in _AUDIO_EXTS and ffmpeg_ok and fmt != "m4a":
-                    cmd += ["--extract-audio", "--audio-format", fmt]
+            # Siempre bestaudio; convertir a mp3 solo si hay ffmpeg
+            cmd += ["-f", "bestaudio[ext=m4a]/bestaudio/best"]
+            if fmt == "mp3" and ffmpeg_ok:
+                aq_map = {"360": "7", "720": "5", "1080": "2", "0": "0"}
+                aq = aq_map.get(quality, "5")
+                cmd += ["--extract-audio", "--audio-format", "mp3", "--audio-quality", aq]
+            elif fmt in _AUDIO_EXTS and ffmpeg_ok:
+                cmd += ["--extract-audio", "--audio-format", fmt]
         else:
             # Video
             try:
@@ -1563,7 +1496,6 @@ def download_media():
 
         cmd.append(yt_url)
         print(f"[WORKER/download] start key={key} kind={kind} platform={platform}", flush=True)
-        print(f"[WORKER/download] cmd={' '.join(cmd)}", flush=True)
 
         # Snapshot de archivos antes de descargar
         try:
@@ -1580,17 +1512,10 @@ def download_media():
 
         if proc.returncode != 0:
             # Log stderr para debug (sin mostrar cookies/tokens)
-            stderr_lines = (proc.stderr or "").splitlines()
-            stderr_tail = "\n".join(stderr_lines[-10:])
-            print(f"[WORKER/download] failed key={key} rc={proc.returncode} stderr={stderr_tail}", flush=True)
-            # Mensaje de error más descriptivo
-            err_msg = "yt-dlp failed"
-            for line in stderr_lines:
-                if "ERROR" in line or "error" in line.lower():
-                    err_msg = line.strip()[:200]
-                    break
+            stderr_tail = "\n".join((proc.stderr or "").splitlines()[-5:])
+            print(f"[WORKER/download] failed key={key} rc={proc.returncode}", flush=True)
             status = 502
-            payload = {"ok": False, "files": [], "message": err_msg, "returncode": proc.returncode}
+            payload = {"ok": False, "files": [], "message": "yt-dlp failed", "returncode": proc.returncode}
             return jsonify(payload), status
 
         # Buscar archivos nuevos
