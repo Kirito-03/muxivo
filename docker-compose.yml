@@ -7,6 +7,9 @@ services:
     container_name: muxivo_app
     restart: unless-stopped
     init: true
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     shm_size: "1gb"
     environment:
       PORT: 7860
