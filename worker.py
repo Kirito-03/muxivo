@@ -1521,15 +1521,31 @@ def download_media():
         except Exception:
             before_names = set()
 
+        def _run_download(extra_args: List[str] = []) -> "subprocess.CompletedProcess[str]":
+            return subprocess.run(
+                cmd + extra_args,
+                capture_output=True, text=True,
+                timeout=DOWNLOAD_TIMEOUT_SEC, check=False
+            )
+
+        _BOT_KEYWORDS = ("sign in", "bot", "cookies", "confirm", "login")
+
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT_SEC, check=False)
+            proc = _run_download()
+
+            # Si YouTube detecta bot → reintentar con cliente TV (no necesita cookies)
+            if proc.returncode != 0 and platform == "youtube":
+                stderr_lower = (proc.stderr or "").lower()
+                if any(kw in stderr_lower for kw in _BOT_KEYWORDS):
+                    print(f"[WORKER/download] bot-detected, retrying with tv_embedded client key={key}", flush=True)
+                    proc = _run_download(["--extractor-args", "youtube:player_client=tv_embedded,web"])
+
         except subprocess.TimeoutExpired:
             status = 504
             payload = {"ok": False, "files": [], "message": "Download timeout"}
             return jsonify(payload), status
 
         if proc.returncode != 0:
-            # Log stderr para debug (sin mostrar cookies/tokens)
             stderr_tail = "\n".join((proc.stderr or "").splitlines()[-5:])
             print(f"[WORKER/download] failed key={key} rc={proc.returncode}", flush=True)
             status = 502
