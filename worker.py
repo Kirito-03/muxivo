@@ -50,6 +50,10 @@ LISTEN_PORT = 5001
 
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 
+# Modo del worker: "vibe" = solo audio | "muxivo" o vacío = todo (audio+video+imagen)
+# Ejemplo: WORKER_MODE=vibe python worker.py
+WORKER_MODE = os.getenv("WORKER_MODE", "").strip().lower()
+
 # Cookies para YouTube (evita detección de bots)
 # Opción A: ruta a un archivo cookies.txt exportado desde el navegador
 # Opción B: nombre del navegador para usar --cookies-from-browser (ej: "chrome", "firefox")
@@ -1382,6 +1386,10 @@ def download_media():
         return jsonify({"ok": False, "files": [], "message": "Missing 'url'"}), 400
     if not is_allowed_media_url(raw_url):
         return jsonify({"ok": False, "files": [], "message": "URL not allowed"}), 400
+
+    # Filtro por modo: vibe solo acepta audio
+    if WORKER_MODE == "vibe" and kind != "audio":
+        return jsonify({"ok": False, "files": [], "message": f"Worker mode 'vibe' only supports audio, got '{kind}'"}), 403
 
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
