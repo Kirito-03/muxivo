@@ -986,22 +986,26 @@ def _resolve_short_url(u: str, timeout: int = 12) -> str:
             return final_url
         return u
     except Exception:
-        # Último intento: Usar el comando curl del sistema operativo (Evita bloqueo por TLS de Akamai)
         try:
             import subprocess
+            print(f"[DEBUG TikTok] Ejecutando curl -s -I {u}", flush=True)
             res = subprocess.run(
                 ["curl", "-s", "-I", u],
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
+            print(f"[DEBUG TikTok] curl returncode: {res.returncode}", flush=True)
+            print(f"[DEBUG TikTok] curl stdout:\n{res.stdout}", flush=True)
+            print(f"[DEBUG TikTok] curl stderr:\n{res.stderr}", flush=True)
             for line in res.stdout.splitlines():
                 if line.lower().startswith("location:"):
                     location = line.split(":", 1)[1].strip()
                     if location and location != u:
+                        print(f"[DEBUG TikTok] resolved location: {location}", flush=True)
                         return location
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DEBUG TikTok] subprocess falló: {e}", flush=True)
         # Si no puede resolver, intenta con GET (algunos servidores no soportan HEAD)
         try:
             headers = {

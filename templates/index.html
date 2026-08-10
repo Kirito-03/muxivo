@@ -160,5 +160,37 @@
       <span style="margin: 0 0.5rem; color: rgba(255, 255, 255, 0.4);">•</span>
       <a href="https://muvixo.art/" target="_blank" style="color: rgba(255, 255, 255, 0.8); text-decoration: underline; margin-top: 0.5rem; display: inline-block;">Sitio web en vivo: https://muvixo.art/</a>
     </footer>
+
+    <!-- Cookie Banner -->
+    <div id="cookie-banner" class="cookie-banner" hidden>
+      <div class="cookie-content">
+        <p>Usamos cookies para mejorar tu experiencia y analizar el tráfico. Al continuar navegando, aceptas nuestra <a href="/terms">Política de Privacidad</a>.</p>
+        <div class="cookie-actions">
+          <button id="accept-cookies" class="primary" type="button">Aceptar</button>
+          <button id="reject-cookies" class="ghost" type="button">Rechazar</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        var banner = document.getElementById('cookie-banner');
+        var acceptBtn = document.getElementById('accept-cookies');
+        var rejectBtn = document.getElementById('reject-cookies');
+        
+        if (!localStorage.getItem('cookie_consent')) {
+          banner.removeAttribute('hidden');
+        }
+
+        acceptBtn.addEventListener('click', function() {
+          localStorage.setItem('cookie_consent', 'accepted');
+          banner.setAttribute('hidden', '');
+        });
+
+        rejectBtn.addEventListener('click', function() {
+          localStorage.setItem('cookie_consent', 'rejected');
+          banner.setAttribute('hidden', '');
+        });
+      });
+    </script>
   </body>
 </html>
