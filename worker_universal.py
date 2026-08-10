@@ -339,7 +339,7 @@ def _detect_tools() -> Tuple[bool, Optional[str], bool]:
     try:
         r = subprocess.run(
             [sys.executable, "-m", "yt_dlp", "--version"],
-            capture_output=True, text=True, timeout=1
+            capture_output=True, text=True, timeout=10
         )
         ytdlp_ok = r.returncode == 0
         ytdlp_version = (r.stdout or "").strip() if ytdlp_ok else None
@@ -1238,7 +1238,7 @@ def search_music():
         f"ytsearch{limit}:{q}",
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         if proc.returncode != 0:
             print(f"[WORKER/search] failed reason=yt-dlp rc={proc.returncode}", flush=True)
             return jsonify({"ok": False, "items": [], "message": "yt-dlp failed"})
