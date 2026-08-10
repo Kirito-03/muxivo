@@ -44,9 +44,9 @@ from flask import Flask, jsonify, request, send_from_directory, abort
 # ---------------------------------------------------------------------------
 # Versión y configuración global
 # ---------------------------------------------------------------------------
-VERSION = "2.0.0"
-LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = 5001
+VERSION = "2.1.0"
+LISTEN_HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
+LISTEN_PORT = int(os.getenv("LISTEN_PORT", "5001"))
 
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 
