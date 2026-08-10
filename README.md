@@ -189,7 +189,7 @@ python worker.py
 Configurar en `docker-compose.yml`:
 
 ```yaml
-TIKTOK_PHOTO_WORKER_URL: http://100.94.219.56:5001
+TIKTOK_PHOTO_WORKER_URL: http://100.95.206.57:5001
 TIKTOK_PHOTO_WORKER_TOKEN: tu-token-secreto
 ```
 
