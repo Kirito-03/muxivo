@@ -50,6 +50,24 @@ LISTEN_PORT = 5001
 
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 
+# Cookies para YouTube (evita detección de bots)
+# Opción A: ruta a un archivo cookies.txt exportado desde el navegador
+# Opción B: nombre del navegador para usar --cookies-from-browser (ej: "chrome", "firefox")
+WORKER_COOKIES_FILE = os.getenv("WORKER_COOKIES_FILE", "").strip()
+WORKER_COOKIES_FROM_BROWSER = os.getenv("WORKER_COOKIES_FROM_BROWSER", "").strip()
+
+
+def _cookies_args() -> List[str]:
+    """Devuelve los argumentos de cookies para yt-dlp, si están configurados."""
+    if WORKER_COOKIES_FILE:
+        p = Path(WORKER_COOKIES_FILE).expanduser()
+        if p.exists() and p.is_file():
+            return ["--cookies", str(p)]
+    if WORKER_COOKIES_FROM_BROWSER:
+        return ["--cookies-from-browser", WORKER_COOKIES_FROM_BROWSER]
+    return []
+
+
 DOWNLOADS_DIR = Path(os.getenv("WORKER_DOWNLOADS_DIR", "worker_downloads")).resolve()
 INDEX_PATH = (DOWNLOADS_DIR / "index.json").resolve()
 
@@ -1236,7 +1254,7 @@ def search_music():
         "--no-playlist", "--no-warnings",
         "--skip-download", "--dump-json", "--quiet",
         f"ytsearch{limit}:{q}",
-    ]
+    ] + _cookies_args()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         if proc.returncode != 0:
@@ -1455,7 +1473,7 @@ def download_media():
             "--retries", "3",
             "--fragment-retries", "3",
             "-o", out_tmpl,
-        ]
+        ] + _cookies_args()
 
         if kind == "audio":
             # Siempre bestaudio; convertir a mp3 solo si hay ffmpeg
