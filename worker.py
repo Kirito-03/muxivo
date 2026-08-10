@@ -1329,7 +1329,47 @@ def extract_media():
 
     platform = detect_platform(raw_url)
     try:
-        if platform == "tiktok":
+        if platform == "youtube":
+            cmd = [
+                sys.executable, "-m", "yt_dlp",
+                "-f", "bestaudio/best",
+                "-g", "--no-warnings", "--quiet",
+                "--socket-timeout", "30"
+            ] + _cookies_args()
+
+            def _run_extract(extra_args: List[str] = []) -> "subprocess.CompletedProcess[str]":
+                return subprocess.run(
+                    cmd + extra_args + [raw_url],
+                    capture_output=True, text=True,
+                    timeout=45, check=False
+                )
+                
+            _BOT_KEYWORDS = ("sign in", "bot", "cookies", "confirm", "login")
+            proc = _run_extract()
+            
+            if proc.returncode != 0:
+                stderr_lower = (proc.stderr or "").lower()
+                if any(kw in stderr_lower for kw in _BOT_KEYWORDS):
+                    print(f"[WORKER/extract] bot-detected, retrying with tv_embedded client", flush=True)
+                    proc = _run_extract(["--extractor-args", "youtube:player_client=tv_embedded,web"])
+            
+            if proc.returncode == 0 and proc.stdout.strip():
+                audio_url = proc.stdout.strip().split("\n")[0]
+                return jsonify({
+                    "ok": True,
+                    "audioUrl": audio_url,
+                    "message": "Stream URL extracted",
+                    "url": raw_url,
+                    "items": [{"url": audio_url, "kind": "audio"}]
+                })
+            else:
+                return jsonify({
+                    "ok": False,
+                    "items": [],
+                    "message": f"Extraction failed: rc={proc.returncode}",
+                    "url": raw_url,
+                })
+        elif platform == "tiktok":
             items = extract_gallery(raw_url)
         elif platform == "instagram":
             img_urls = _extract_instagram_gallery(raw_url)
