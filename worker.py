@@ -121,14 +121,26 @@ _AUDIO_EXTS = {"mp3", "m4a", "opus", "ogg", "wav", "flac", "aac"}
 _VIDEO_EXTS = {"mp4", "webm", "mkv", "mov", "avi", "flv", "ts"}
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "avif"}
 
-# Plataformas permitidas (facebook preparado pero deshabilitado)
-_ALLOWED_PLATFORMS = (
+# Plataformas con soporte nativo verificado (detección extra precisa)
+_KNOWN_PLATFORMS = (
     "youtube.com", "youtu.be",
     "tiktok.com", "vt.tiktok.com", "vm.tiktok.com", "t.tiktok.com",
     "instagram.com",
     "soundcloud.com", "sndcdn.com",
-    # "facebook.com",  # pendiente de implementación
+    "spotify.com", "open.spotify.com",
+    "twitter.com", "x.com", "t.co",
+    "facebook.com", "fb.watch",
+    "twitch.tv",
+    "dailymotion.com",
+    "vimeo.com",
+    "reddit.com", "v.redd.it",
+    "bilibili.com",
+    "pinterest.com",
 )
+
+# Modo de URL: True = aceptar CUALQUIER URL pública (recomendado para uso personal)
+# False = solo plataformas en _KNOWN_PLATFORMS
+_OPEN_URL_POLICY = os.getenv("WORKER_OPEN_URL_POLICY", "1").strip().lower() not in ("0", "false", "no", "off")
 
 app = Flask(__name__)
 
@@ -231,7 +243,7 @@ def _is_private_host(host: str) -> bool:
 
 
 def is_allowed_media_url(raw: str) -> bool:
-    """Verifica que la URL sea de una plataforma permitida y no sea privada."""
+    """Verifica que la URL sea pública y no sea de una red interna."""
     try:
         u = urlparse(raw)
     except Exception:
@@ -241,14 +253,20 @@ def is_allowed_media_url(raw: str) -> bool:
     # Bloquear null bytes y path traversal
     if "\x00" in raw or ".." in raw:
         return False
-    host = (u.hostname or "").lower().replace("www.", "").replace("m.", "")
+    host = (u.hostname or "").lower()
+    if not host:
+        return False
     if _is_private_host(host):
         return False
-    return any(host == a or host.endswith(f".{a}") for a in _ALLOWED_PLATFORMS)
+    if _OPEN_URL_POLICY:
+        return True  # Acepta cualquier URL pública
+    # Modo restringido: solo plataformas conocidas
+    clean_host = host.replace("www.", "").replace("m.", "")
+    return any(clean_host == a or clean_host.endswith(f".{a}") for a in _KNOWN_PLATFORMS)
 
 
 def detect_platform(raw: str) -> str:
-    """Detecta la plataforma: youtube | tiktok | instagram | soundcloud | facebook | unknown."""
+    """Detecta la plataforma: youtube | tiktok | instagram | soundcloud | spotify | twitter | twitch | vimeo | reddit | bilibili | facebook | unknown."""
     try:
         u = urlparse(raw)
         host = (u.hostname or "").lower().replace("www.", "").replace("m.", "")
@@ -262,9 +280,25 @@ def detect_platform(raw: str) -> str:
         return "instagram"
     if "soundcloud" in host or "sndcdn" in host:
         return "soundcloud"
-    if "facebook" in host:
+    if "spotify" in host:
+        return "spotify"
+    if "twitter" in host or host in ("x.com", "t.co"):
+        return "twitter"
+    if "twitch" in host:
+        return "twitch"
+    if "vimeo" in host:
+        return "vimeo"
+    if "reddit" in host or host == "v.redd.it":
+        return "reddit"
+    if "bilibili" in host:
+        return "bilibili"
+    if "facebook" in host or host == "fb.watch":
         return "facebook"
-    return "unknown"
+    if "dailymotion" in host:
+        return "dailymotion"
+    if "pinterest" in host:
+        return "pinterest"
+    return "other"  # yt-dlp intentará descargarlo de todos modos
 
 
 def extract_youtube_id(raw: str) -> Optional[str]:
@@ -593,7 +627,8 @@ _IMG_REJECT_PATTERNS = (
     "default_", "100x100", "150x150", "168x168", "720x720",
     "72x72", "120x120", "200x200", "300x300", "p16-profile", "profile_pic",
     "musically", "/obj/musically", "watermark",
-    "/tos-alisg-i-", "profile", "logo", "badge", "s150x150"
+    # NOTA: "/tos-alisg-i-" removido — es un path CDN legítimo para fotos de posts TikTok en servidores asiáticos
+    "profile", "logo", "badge", "s150x150"
 )
 
 
@@ -795,6 +830,46 @@ def _resolve_tiktok_shortlink(url: str) -> str:
         return url
 
 
+def _extract_gallery_via_ytdlp(url: str) -> List[str]:
+    """Fallback: extrae imágenes de TikTok Photo usando yt-dlp --dump-json."""
+    try:
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--no-playlist", "--no-warnings", "--quiet",
+            "--dump-json", url,
+        ] + _cookies_args()
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        if proc.returncode != 0:
+            return []
+        urls: List[str] = []
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            # yt-dlp devuelve thumbnails o formats con type=image para TikTok Photo
+            thumbnails = data.get("thumbnails") or []
+            for t in thumbnails:
+                u = str(t.get("url") or "").strip()
+                if u and u.startswith("http") and not any(p in u.lower() for p in _IMG_REJECT_PATTERNS):
+                    urls.append(u)
+            # También revisar formats con ext=jpg/webp (slides)
+            formats = data.get("formats") or []
+            for f in formats:
+                if str(f.get("ext") or "").lower() in ("jpg", "jpeg", "png", "webp"):
+                    fu = str(f.get("url") or "").strip()
+                    if fu and fu.startswith("http"):
+                        urls.append(fu)
+        print(f"[WORKER/extract] ytdlp_fallback found={len(urls)}", flush=True)
+        return _dedup_images(urls)
+    except Exception as exc:
+        print(f"[WORKER/extract] ytdlp_fallback failed: {exc}", flush=True)
+        return []
+
+
 def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]:
     """Pipeline completo: resolve -> fetch -> extract -> dedup -> rank -> items."""
     t0 = _now()
@@ -810,7 +885,12 @@ def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]
         html, final_url = _fetch_html(url, mobile=False)
     if not html:
         print("[WORKER/extract] empty HTML", flush=True)
-        return []
+        # Fix #1: fallback directo a yt-dlp si no hay HTML
+        items_ytdlp = _extract_gallery_via_ytdlp(url)
+        return [
+            {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
+            for i, u in enumerate(items_ytdlp[:max_items])
+        ]
 
     print(f"[WORKER/extract] html_size={len(html)}", flush=True)
 
@@ -851,6 +931,11 @@ def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]
             if not all_urls:
                 all_urls.extend(_extract_og_image(html2))
 
+    # Fix #1: fallback a yt-dlp si el scraping HTML no encontró nada
+    if not all_urls:
+        print("[WORKER/extract] HTML scraping yielded 0 — trying yt-dlp fallback", flush=True)
+        all_urls = _extract_gallery_via_ytdlp(url)
+
     # 4. Dedup + ranking
     unique = _dedup_images(all_urls)
     print(f"[WORKER/extract] candidates={len(unique)}", flush=True)
@@ -868,13 +953,13 @@ def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]
 
 
 def _extract_instagram_gallery(url: str) -> List[str]:
-    """Extracción básica de imágenes Instagram vía yt-dlp."""
+    """Extracción básica de imágenes Instagram vía yt-dlp (con cookies si están disponibles)."""
     try:
         cmd = [
             sys.executable, "-m", "yt_dlp",
             "--no-playlist", "--no-warnings", "--quiet",
             "--dump-json", url,
-        ]
+        ] + _cookies_args()  # Fix #7: incluir cookies para posts privados/semiprivados
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         if proc.returncode != 0:
             return []
@@ -1076,19 +1161,48 @@ def _save_cache_entry(key: str, files: List[Dict[str, Any]], meta: Dict[str, Any
 # Descarga de imagen binaria con requests
 # ---------------------------------------------------------------------------
 
+# Tamaño mínimo aceptable para un archivo de imagen (500 bytes evita respuestas de error HTML)
+_MIN_IMAGE_BYTES = 500
+
+# Headers para descargar imágenes de CDNs que requieren Referer (TikTok CDN, Instagram CDN)
+_CDN_DOWNLOAD_HEADERS: Dict[str, str] = {
+    "User-Agent": _UA_MOBILE,
+    "Referer": "https://www.tiktok.com/",  # Fix #2: necesario para tiktokcdn.com
+    "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _cdn_headers_for(url: str) -> Dict[str, str]:
+    """Devuelve headers apropiados según el dominio del CDN."""
+    low = url.lower()
+    if "tiktokcdn" in low or "tiktok.com" in low:
+        return dict(_CDN_DOWNLOAD_HEADERS)
+    if "instagram.com" in low or "cdninstagram.com" in low or "fbcdn.net" in low:
+        return {
+            "User-Agent": _UA_MOBILE,
+            "Referer": "https://www.instagram.com/",
+            "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+        }
+    return {"User-Agent": _UA_MOBILE}
+
+
 def _download_binary(url: str, dest: Path) -> Optional[Path]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + f".tmp-{int(_now())}")
     try:
-        r = requests.get(url, stream=True, timeout=30, allow_redirects=True,
-                         headers={"User-Agent": _UA_MOBILE})
+        hdrs = _cdn_headers_for(url)  # Fix #2: headers con Referer según CDN
+        r = requests.get(url, stream=True, timeout=30, allow_redirects=True, headers=hdrs)
         if r.status_code < 200 or r.status_code >= 300:
+            print(f"[WORKER/binary] HTTP {r.status_code} for {url[:80]}", flush=True)
             return None
         with open(tmp, "wb") as fh:
             for chunk in r.iter_content(chunk_size=256 * 1024):
                 if chunk:
                     fh.write(chunk)
-        if not tmp.exists() or tmp.stat().st_size <= 0:
+        # Fix #5: umbral mínimo 500 bytes (antes era 0, aceptaba respuestas de error HTML)
+        if not tmp.exists() or tmp.stat().st_size < _MIN_IMAGE_BYTES:
+            print(f"[WORKER/binary] file too small ({tmp.stat().st_size if tmp.exists() else 0}B) for {url[:80]}", flush=True)
             try:
                 tmp.unlink()
             except Exception:
@@ -1096,7 +1210,8 @@ def _download_binary(url: str, dest: Path) -> Optional[Path]:
             return None
         tmp.replace(dest)
         return dest
-    except Exception:
+    except Exception as exc:
+        print(f"[WORKER/binary] download failed: {exc}", flush=True)
         try:
             if tmp.exists():
                 tmp.unlink()
@@ -1403,6 +1518,91 @@ def extract_media():
     })
 
 
+def _handle_spotify_download(url: str, kind: str, fmt: str, quality: str) -> Tuple[Any, int]:
+    """Descarga de Spotify usando yt-dlp (búsqueda en YouTube) como fallback robusto."""
+    key = _cache_key_for(url, kind, fmt, quality)
+    cached = _cached_files_from_index(key)
+    if cached:
+        return jsonify({"ok": True, "files": cached, "cached": True, "source": "worker-cache"}), 200
+
+    join_event = None
+    with PENDING_LOCK:
+        if key in PENDING:
+            join_event = PENDING[key]["event"]
+        else:
+            ev = threading.Event()
+            PENDING[key] = {"event": ev}
+
+    if join_event is not None:
+        join_event.wait(timeout=240)
+        result = _result_get(key)
+        if result is not None:
+            return jsonify(result), 200
+        return jsonify({"ok": False, "files": [], "message": "Worker busy"}), 503
+
+    try:
+        _, _, ffmpeg_ok = _detect_tools()
+        prefix = sanitize_filename(f"spotify_{_sha1(url)[:12]}_{fmt}_{quality}", f"spotify_{_sha1(url)[:12]}")
+        out_tmpl = str((DOWNLOADS_DIR / f"{prefix}.%(ext)s").resolve())
+        
+        # Le decimos a yt-dlp que busque la canción de Spotify en YouTube automáticamente.
+        # yt-dlp no soporta Spotify nativamente (solo extrae metadatos).
+        # Al pasarle el link de Spotify con `--default-search ytsearch`, yt-dlp lee los metadatos
+        # de Spotify, hace la búsqueda en YouTube, y descarga el primer resultado.
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--no-playlist", "--no-warnings", "--quiet",
+            "--socket-timeout", "30",
+            "--retries", "3",
+            "--default-search", "ytsearch",
+            "-o", out_tmpl,
+        ] + _cookies_args()
+
+        cmd += ["-f", "bestaudio[ext=m4a]/bestaudio/best"]
+        if fmt == "mp3" and ffmpeg_ok:
+            aq_map = {"360": "7", "720": "5", "1080": "2", "0": "0"}
+            cmd += ["--extract-audio", "--audio-format", "mp3", "--audio-quality", aq_map.get(quality, "5")]
+        elif fmt in _AUDIO_EXTS and ffmpeg_ok:
+            cmd += ["--extract-audio", "--audio-format", fmt]
+
+        cmd.append(url)
+
+        _log.info(f"[WORKER/spotify] running yt-dlp search for {url}")
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+
+        if proc.returncode == 0:
+            files_out = []
+            for f in DOWNLOADS_DIR.iterdir():
+                if f.is_file() and f.name.startswith(prefix):
+                    sz = int(f.stat().st_size)
+                    files_out.append({
+                        "name": f.name,
+                        "url": _file_url(f.name),
+                        "kind": "audio",
+                        "size": sz,
+                        "ext": f.suffix.lstrip(".").lower()
+                    })
+
+            if files_out:
+                _save_cache_entry(key, files_out, {"platform": "spotify", "kind": "audio", "format": fmt})
+                _result_put(key, {"ok": True, "files": files_out, "cached": False, "source": "worker-spotify"})
+                return jsonify({"ok": True, "files": files_out, "cached": False, "source": "worker"}), 200
+
+        err = proc.stderr.strip()
+        _result_put(key, {"ok": False, "files": [], "message": f"Spotify yt-dlp error: {err[:200]}"})
+        return jsonify({"ok": False, "files": [], "message": f"Spotify extract failed: {err[:100]}"}), 500
+
+    except Exception as exc:
+        _result_put(key, {"ok": False, "files": [], "message": f"Spotify error: {exc}"})
+        return jsonify({"ok": False, "files": [], "message": str(exc)}), 500
+    finally:
+        with PENDING_LOCK:
+            if key in PENDING:
+                if "event" in PENDING[key]:
+                    PENDING[key]["event"].set()
+                del PENDING[key]
+
+
 # ---------------------------------------------------------------------------
 # Flask: POST /download
 # ---------------------------------------------------------------------------
@@ -1449,7 +1649,7 @@ def download_media():
         else:
             img_urls_to_dl = _extract_image_urls(raw_url)
 
-        for i, u in enumerate(img_urls_to_dl[:10]):
+        for i, u in enumerate(img_urls_to_dl[:35]):  # Fix #3: TikTok Photo puede tener hasta 35 slides
             ext = Path(urlparse(u).path).suffix.lstrip(".").lower() or "jpg"
             base = sanitize_filename(f"{_sha1(u)[:10]}_{i+1}.{ext}", f"img_{i+1}.{ext}")
             dest = (DOWNLOADS_DIR / base).resolve()
@@ -1470,8 +1670,12 @@ def download_media():
         payload = {"ok": bool(files_out), "files": files_out, "cached": False, "source": "worker"}
         return jsonify(payload), (200 if files_out else 502)
 
-    # --- Audio / Video: yt-dlp ---
+    # --- Spotify: spotdl o fallback YouTube search ---
     platform = detect_platform(raw_url)
+    if platform == "spotify":
+        return _handle_spotify_download(raw_url, kind, fmt, quality)
+
+    # --- Audio / Video: yt-dlp ---
     yt_url = normalize_youtube_url(raw_url) or raw_url
     key = _cache_key_for(yt_url, kind, fmt, quality)
 
