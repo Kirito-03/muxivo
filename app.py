@@ -678,7 +678,12 @@ def _resolve_allowed_relpath(relpath: str) -> Path:
     return full
 
 
-app = Flask(__name__, template_folder="templates", static_folder="static")
+app = Flask(
+    __name__,
+    template_folder="templates",
+    static_folder="static",
+    static_url_path="/static",
+)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -795,12 +800,61 @@ def _log_req_end(resp):
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    # Serve React frontend
+    react_index = (ROOT_DIR / "frontend" / "dist" / "index.html").resolve()
+    if react_index.exists():
+        return send_file(str(react_index))
+    abort(500, description="Frontend build not found in frontend/dist. Run 'pnpm run build' inside frontend/")
 
 
 @app.route('/terms')
 def terms():
     return render_template('terms.html')
+
+
+# --- React SPA assets route ---
+# Serve /assets/* files from frontend/dist/assets/ (Vite build output)
+@app.get("/assets/<path:filename>")
+def react_assets(filename):
+    react_dir = (ROOT_DIR / "frontend" / "dist" / "assets").resolve()
+    target = (react_dir / filename).resolve()
+    # Security: ensure the file is within the react assets directory
+    try:
+        target.relative_to(react_dir)
+    except ValueError:
+        abort(404)
+    if not target.exists():
+        abort(404)
+    import mimetypes as _mt
+    mt = _mt.guess_type(str(target))[0] or "application/octet-stream"
+    # Long cache for hashed assets
+    cache = 31536000 if ('-' in filename) else 0
+    return send_file(str(target), mimetype=mt, max_age=cache)
+
+
+# --- SVG icons from React dist ---
+@app.get("/logo.svg")
+def react_logo_svg():
+    p = (ROOT_DIR / "frontend" / "dist" / "logo.svg").resolve()
+    if p.exists():
+        return send_file(str(p), mimetype="image/svg+xml")
+    abort(404)
+
+
+@app.get("/favicon.svg")
+def react_favicon_svg():
+    p = (ROOT_DIR / "frontend" / "dist" / "favicon.svg").resolve()
+    if p.exists():
+        return send_file(str(p), mimetype="image/svg+xml")
+    abort(404)
+
+
+@app.get("/icons.svg")
+def react_icons_svg():
+    p = (ROOT_DIR / "frontend" / "dist" / "icons.svg").resolve()
+    if p.exists():
+        return send_file(str(p), mimetype="image/svg+xml")
+    abort(404)
 
 
 @app.get("/manifest.webmanifest")

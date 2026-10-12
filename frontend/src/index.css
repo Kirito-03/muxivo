@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    margin: 0;
+    padding: 0;
+    background-color: #060B0E;
+    color: #D5EEEC;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+  
+  body {
+    overscroll-behavior-y: none;
+    min-height: 100vh;
+  }
+
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+}
+
+/* Hide scrollbar for a pure terminal feel */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+
+/* Phosphor Glows */
+.glow-teal {
+  box-shadow: 0 0 16px rgba(95, 208, 200, 0.35);
+}
+
+.glow-teal-subtle {
+  box-shadow: 0 0 12px rgba(95, 208, 200, 0.18);
+}
+
+.glow-teal-strong {
+  box-shadow: 0 0 24px rgba(95, 208, 200, 0.5);
+}
+
+.glow-red {
+  box-shadow: 0 0 20px rgba(255, 92, 108, 0.35);
+}
+
+.glow-green {
+  box-shadow: 0 0 20px rgba(61, 220, 151, 0.35);
+}
+
+.glow-text {
+  text-shadow: 0 0 8px rgba(95, 208, 200, 0.5);
+}
+
+/* Custom terminal card style */
+.terminal-card {
+  background-color: #0D171B;
+  border: 1px solid #1E3640;
+  border-radius: 12px;
+}
+
+.terminal-card-elevated {
+  background-color: #13232A;
+  border: 1px solid #1E3640;
+  border-radius: 12px;
+}

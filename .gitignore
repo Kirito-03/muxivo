@@ -4,6 +4,8 @@ __pycache__/
 
 # Entorno virtual
 env/
+.venv/
+venv/
 
 # Descargas y cache
 downloads/
@@ -21,7 +23,12 @@ cookies/
 www.instagram.com_cookies.txt
 www.tiktok.com_cookies.txt
 www.youtube.com_cookies.txt
-*_cookies.txtcurrent.txt
+*_cookies.txt
 cookies/
 *.txt
 www.*_cookies.txt
+
+# frontend — React/Vite
+frontend/node_modules/
+# El dist/ se incluye en el repo para que Flask lo sirva sin necesitar Node en producción
+# frontend/dist/

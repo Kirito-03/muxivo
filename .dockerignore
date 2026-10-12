@@ -20,6 +20,7 @@ served_files/
 Thumbs.db
 *.log
 node_modules/
+frontend/node_modules/
 deploy/caddy_data/
 deploy/caddy_config/
 cookies/
