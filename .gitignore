@@ -15,8 +15,11 @@ served_files/
 # Logs
 *.log
 
-# Docker
+# Docker & OS
 *.env
+*.lnk
+Thumbs.db
+.DS_Store
 
 # Cookies — archivos sensibles, solo en VPS
 cookies/
