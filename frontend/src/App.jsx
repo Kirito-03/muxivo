@@ -11,6 +11,8 @@ import ErrorView from './components/ErrorView';
 import HistoryView from './components/HistoryView';
 import SettingsView from './components/SettingsView';
 import { detectMedia, getHistory, getSessionId } from './utils/api';
+import { usePwaInstall } from './utils/usePwaInstall';
+import { InstallModal } from './components/InstallPrompt';
 
 // Platform display label helpers
 const PLATFORM_LABELS = {
@@ -36,6 +38,7 @@ function kindToType(kind) {
 }
 
 export default function App() {
+  const pwa = usePwaInstall();
   const [currentTab, setCurrentTab] = useState('descargar');
   // flowState: 'input' | 'detecting' | 'detected' | 'downloading' | 'completed' | 'error'
   const [flowState, setFlowState] = useState('input');
@@ -186,6 +189,8 @@ export default function App() {
       <Header
         currentTab={currentTab}
         onSelectTab={handleSelectTab}
+        showInstallBtn={!pwa.isStandalone}
+        onInstall={pwa.installApp}
       />
 
       {/* Main Content Area */}
@@ -203,6 +208,9 @@ export default function App() {
                   onAnalyzeUrl={handleAnalyzeUrl}
                   recentDownloads={history}
                   onRedownload={handleRedownload}
+                  showInstallBanner={pwa.showBanner}
+                  onInstall={pwa.installApp}
+                  onDismissInstall={pwa.dismissBanner}
                 />
               )}
 
@@ -292,13 +300,24 @@ export default function App() {
 
           {/* TAB 3: AJUSTES */}
           {currentTab === 'ajustes' && (
-            <SettingsView onClearHistory={handleClearHistory} />
+            <SettingsView
+              onClearHistory={handleClearHistory}
+              isStandalone={pwa.isStandalone}
+              onInstall={pwa.installApp}
+            />
           )}
         </div>
       </main>
 
       {/* Mobile Bottom Navigation */}
       <BottomNav currentTab={currentTab} onSelectTab={handleSelectTab} />
+
+      {/* Modal de instrucciones para iOS / instalación manual */}
+      <InstallModal
+        isOpen={pwa.showIosModal}
+        onClose={() => pwa.setShowIosModal(false)}
+        isIOS={pwa.isIOS}
+      />
     </div>
   );
 }

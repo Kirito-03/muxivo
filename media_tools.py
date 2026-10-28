@@ -1203,9 +1203,8 @@ def _domains_from_urls(urls: List[str]) -> List[str]:
 
 
 def _client_order() -> List[str]:
-    # Dejar que yt-dlp auto-seleccione con Deno JS runtime
-    # web como primario; fallback automático a ios/android si web falla
-    return ["web"]
+    # Dejar que yt-dlp auto-seleccione el cliente de reproducción adecuado
+    return ["default"]
 
 
 def _is_yt_playlist_url(u: str) -> bool:

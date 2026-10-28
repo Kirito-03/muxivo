@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-export default function SettingsView({ onClearHistory }) {
+export default function SettingsView({ onClearHistory, isStandalone = false, onInstall }) {
   const [defaultVideoQuality, setDefaultVideoQuality] = useState('1080p');
   const [defaultAudioFormat, setDefaultAudioFormat] = useState('MP3');
   const [autoPaste, setAutoPaste] = useState(true);
@@ -235,8 +235,32 @@ export default function SettingsView({ onClearHistory }) {
 
           <div className="flex items-center justify-between px-4 py-3 bg-[#171c20]">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-[#252b2e] flex items-center justify-center text-[#7dece4]">
-                <span className="material-symbols-outlined text-[18px]">terminal</span>
+              <div className="w-8 h-8 rounded-lg bg-[#252b2e] flex items-center justify-center text-[#5fd0c8]">
+                <span className="material-symbols-outlined text-[18px]">install_mobile</span>
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="text-sm font-semibold text-[#dee3e7]">Instalar como aplicación</span>
+                <span className="text-xs font-mono text-[#869391]">
+                  {isStandalone ? 'App ya instalada' : 'Acceso rápido en tu teléfono'}
+                </span>
+              </div>
+            </div>
+            {!isStandalone && onInstall && (
+              <button
+                type="button"
+                onClick={onInstall}
+                className="px-3 py-1.5 rounded-lg bg-[#5fd0c8] hover:bg-[#7dece4] text-[#041014] text-xs font-bold font-mono shadow-[0_0_10px_rgba(95,208,200,0.3)] transition-all flex items-center gap-1 active:scale-95"
+              >
+                <span className="material-symbols-outlined text-[14px]">download</span>
+                <span>Instalar</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between px-4 py-3 bg-[#171c20]">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-[#0d101a] border border-[#1E3640] overflow-hidden flex items-center justify-center shadow-[0_0_8px_rgba(95,208,200,0.2)]">
+                <img src="/icon.png" alt="Muxivo" className="w-full h-full object-cover" />
               </div>
               <span className="text-sm font-semibold text-[#dee3e7]">Muxivo Web App</span>
             </div>

@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
+import { InstallBanner } from './InstallPrompt';
 
 export default function HomeView({
   urlInput,
   setUrlInput,
   onAnalyzeUrl,
   recentDownloads = [],
-  onRedownload
+  onRedownload,
+  showInstallBanner = false,
+  onInstall,
+  onDismissInstall,
 }) {
   const [pasteNotice, setPasteNotice] = useState('');
 
@@ -38,6 +42,11 @@ export default function HomeView({
   return (
     <div className="w-full flex flex-col items-center justify-center py-6 sm:py-12">
       <div className="w-full max-w-[680px] flex flex-col items-center text-center">
+        {/* Banner de instalación en teléfono */}
+        {showInstallBanner && (
+          <InstallBanner onInstall={onInstall} onDismiss={onDismissInstall} />
+        )}
+
         {/* Glow effect backdrop */}
         <div className="relative flex flex-col items-center mb-6 w-full">
           <div className="absolute -top-10 w-72 h-72 rounded-full bg-[#5fd0c8]/10 blur-3xl pointer-events-none -z-10"></div>

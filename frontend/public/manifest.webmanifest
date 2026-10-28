@@ -1,0 +1,22 @@
+{
+  "name": "Muxivo",
+  "short_name": "Muxivo",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#060B0E",
+  "theme_color": "#060B0E",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "59x61",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-apk.png",
+      "sizes": "135x134",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

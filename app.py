@@ -849,6 +849,16 @@ def react_favicon_svg():
     abort(404)
 
 
+@app.get("/favicon.ico")
+def react_favicon_ico():
+    p = (ROOT_DIR / "frontend" / "dist" / "favicon.ico").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "icon.png").resolve()
+    if p.exists():
+        return send_file(str(p), mimetype="image/x-icon", max_age=3600)
+    abort(404)
+
+
 @app.get("/icons.svg")
 def react_icons_svg():
     p = (ROOT_DIR / "frontend" / "dist" / "icons.svg").resolve()

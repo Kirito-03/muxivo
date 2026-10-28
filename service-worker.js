@@ -5,9 +5,10 @@ self.addEventListener("install", (event) => {
       await cache.addAll([
         "/",
         "/manifest.webmanifest",
+        "/icon.png",
         "/icon-apk.png",
-        "/static/css/styles.css",
-        "/static/js/app.js",
+        "/logo.svg",
+        "/favicon.ico",
       ])
       await self.skipWaiting()
     })()
