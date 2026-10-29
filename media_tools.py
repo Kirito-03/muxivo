@@ -522,10 +522,8 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
 
 def _platform_cookie_min_bytes(platform: str) -> int:
     p = (platform or "").strip().lower()
-    if p == "youtube":
-        return 10 * 1024
-    if p in ("instagram", "tiktok"):
-        return 5 * 1024
+    if p in ("youtube", "instagram", "tiktok"):
+        return 200
     return 1
 
 
@@ -609,7 +607,7 @@ def validate_cookiefile(platform: str, path: Optional[Path]) -> Dict[str, Any]:
         if not any(("youtube.com" in d) for d in domains):
             out["reason"] = "missing_youtube_domain"
             return out
-        critical = {"sapisid", "sid", "hsid", "ssid", "login_info"}
+        critical = {"sapisid", "sid", "hsid", "ssid", "login_info", "__secure-3psid", "__secure-1psid", "__secure-3papisid"}
         has_critical = any(c in names for c in critical)
         out["critical"] = bool(has_critical)
         if not has_critical:
@@ -2089,7 +2087,7 @@ def _tiktok_photo_candidates_playwright(
     _tk_has_domain = False
     if tiktok_cookies_path:
         try:
-            _tk_usable_raw, _tk_size = _cookies_file_usable_min(tiktok_cookies_path, 5 * 1024)
+            _tk_usable_raw, _tk_size = _cookies_file_usable_min(tiktok_cookies_path, 200)
             if _tk_usable_raw:
                 _raw = tiktok_cookies_path.read_text(encoding="utf-8", errors="ignore")
                 _tk_has_domain = "tiktok.com" in _raw.lower()
@@ -2940,6 +2938,69 @@ def _instagram_post_fast_embed(url: str, timeout: int = 6) -> Dict[str, Any]:
     try:
         import requests
         import html as _html
+        import http.cookiejar
+
+        # 0. Try Instagram internal API v1 (/api/v1/media/<media_id>/info/) if cookies are available
+        try:
+            ig_cpath = get_cookiefile_for_platform("instagram")
+            if ig_cpath and ig_cpath.exists() and ig_cpath.stat().st_size > 10:
+                jar = http.cookiejar.MozillaCookieJar(str(ig_cpath))
+                jar.load(ignore_discard=True, ignore_expires=True)
+                alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                mid = 0
+                for ch in sc:
+                    if ch in alphabet:
+                        mid = mid * 64 + alphabet.index(ch)
+                if mid > 0:
+                    r_api = requests.get(
+                        f"https://www.instagram.com/api/v1/media/{mid}/info/",
+                        cookies=jar,
+                        headers={
+                            "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+                            "X-IG-App-ID": "936619743392459",
+                            "X-Requested-With": "XMLHttpRequest",
+                            "Referer": f"https://www.instagram.com/p/{sc}/",
+                        },
+                        timeout=timeout,
+                    )
+                    if r_api.status_code == 200:
+                        items_api = (r_api.json() or {}).get("items") or []
+                        if items_api and isinstance(items_api[0], dict):
+                            it0 = items_api[0]
+                            usr = (it0.get("user") or {}).get("username")
+                            if usr:
+                                out["uploader"] = f"@{usr}"
+                            cap = (it0.get("caption") or {}).get("text")
+                            if cap:
+                                out["title"] = re.sub(r"\s+", " ", str(cap).strip())[:90]
+                            carousel = it0.get("carousel_media") or []
+                            imgs_api: List[str] = []
+                            vids_api: List[str] = []
+                            if carousel:
+                                for cm in carousel:
+                                    vv = (cm or {}).get("video_versions") or []
+                                    cands = ((cm or {}).get("image_versions2") or {}).get("candidates") or []
+                                    if vv and isinstance(vv[0], dict) and vv[0].get("url"):
+                                        vids_api.append(str(vv[0]["url"]))
+                                    if cands and isinstance(cands[0], dict) and cands[0].get("url"):
+                                        imgs_api.append(str(cands[0]["url"]))
+                            else:
+                                vv = it0.get("video_versions") or []
+                                cands = (it0.get("image_versions2") or {}).get("candidates") or []
+                                if vv and isinstance(vv[0], dict) and vv[0].get("url"):
+                                    vids_api.append(str(vv[0]["url"]))
+                                elif cands and isinstance(cands[0], dict) and cands[0].get("url"):
+                                    imgs_api.append(str(cands[0]["url"]))
+                            if imgs_api:
+                                out["media_type"] = "gallery" if len(imgs_api) > 1 else "image"
+                                out["images"] = imgs_api
+                                return out
+                            if vids_api:
+                                out["media_type"] = "video"
+                                out["video_url"] = vids_api[0]
+                                return out
+        except Exception:
+            pass
 
         embed_url = f"https://www.instagram.com/p/{sc}/embed/captioned/"
         r = requests.get(

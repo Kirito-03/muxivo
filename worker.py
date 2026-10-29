@@ -1018,6 +1018,50 @@ def _extract_instagram_gallery(url: str) -> List[str]:
             return False
         return ("cdninstagram.com" in low) or ("fbcdn.net" in low)
 
+    # 0. Estrategia API interna de Instagram (/api/v1/media/<media_id>/info/) con cookies
+    # Funciona para posts privados de cuentas seguidas, +18 y carruseles completos en máxima calidad.
+    if shortcode and jar is not None:
+        try:
+            alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            media_id = 0
+            for ch in shortcode:
+                if ch in alphabet:
+                    media_id = media_id * 64 + alphabet.index(ch)
+            if media_id > 0:
+                api_url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+                api_hdrs = {
+                    "User-Agent": _UA_DESKTOP,
+                    "X-IG-App-ID": "936619743392459",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"https://www.instagram.com/p/{shortcode}/",
+                }
+                r_api = requests.get(api_url, headers=api_hdrs, cookies=jar, timeout=12)
+                if r_api.status_code == 200:
+                    api_items = (r_api.json() or {}).get("items") or []
+                    if api_items and isinstance(api_items[0], dict):
+                        it0 = api_items[0]
+                        carousel = it0.get("carousel_media") or []
+                        if carousel:
+                            for cm in carousel:
+                                cands = ((cm or {}).get("image_versions2") or {}).get("candidates") or []
+                                if cands and isinstance(cands[0], dict):
+                                    u = _clean_image_url(str(cands[0].get("url") or ""))
+                                    if _is_clean_ig_img(u):
+                                        results.append(u)
+                        else:
+                            cands = (it0.get("image_versions2") or {}).get("candidates") or []
+                            if cands and isinstance(cands[0], dict):
+                                u = _clean_image_url(str(cands[0].get("url") or ""))
+                                if _is_clean_ig_img(u):
+                                    results.append(u)
+        except Exception as exc:
+            print(f"[WORKER/extract] ig api v1 failed: {exc}", flush=True)
+
+    if results:
+        deduped = _dedup_images(results)
+        print(f"[WORKER/extract] instagram api_v1 found={len(deduped)}", flush=True)
+        return deduped
+
     # 1. Estrategia Embed (/embed/captioned/)
     if shortcode:
         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
@@ -2129,6 +2173,25 @@ def serve_downloaded_file(filename: str):
     if not fp.exists() or not fp.is_file():
         return jsonify({"ok": False, "message": "Not found"}), 404
     return send_from_directory(str(DOWNLOADS_DIR), name, as_attachment=False)
+
+
+# ---------------------------------------------------------------------------
+# Flask: POST /cookies
+# ---------------------------------------------------------------------------
+
+@app.post("/cookies")
+def upload_cookies_route():
+    """Permite sincronizar ~/cookies.txt directamente vía HTTP desde la PC o el VPS."""
+    data = _safe_json()
+    cookies_text = str(data.get("cookies_text") or "").strip()
+    if not cookies_text or "Netscape" not in cookies_text and "\t" not in cookies_text:
+        return jsonify({"ok": False, "message": "Invalid cookies_text"}), 400
+    try:
+        dest = Path.home() / "cookies.txt"
+        dest.write_text(cookies_text + "\n", encoding="utf-8")
+        return jsonify({"ok": True, "cookies_file": str(dest), "bytes": dest.stat().st_size})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------

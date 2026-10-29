@@ -62,3 +62,4 @@ if [ "${1:-}" = "--daemon" ] || [ "${1:-}" = "-d" ]; then
 else
     exec python "$REPO_DIR/worker.py"
 fi
+

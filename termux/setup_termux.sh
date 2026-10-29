@@ -48,3 +48,4 @@ echo ""
 echo "3️⃣ (Opcional) Si quieres que descargue posts privados/restringidos de tu cuenta:"
 echo "   Guarda tus cookies exportadas en: ~/cookies.txt"
 echo "--------------------------------------------------"
+
