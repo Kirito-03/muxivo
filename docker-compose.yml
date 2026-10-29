@@ -3,12 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
     container_name: muxivo_app
     restart: unless-stopped
     init: true
-    network_mode: "host"
     shm_size: "1gb"
+    networks:
+      - proxy_network
+    ports:
+      - "7860:7860"
     environment:
       PORT: 7860
       MEDIA_DOWNLOADER_IMPERSONATE: "1"
@@ -41,3 +43,8 @@ volumes:
   media_downloads:
   media_previews:
   media_served:
+
+networks:
+  proxy_network:
+    external: true
+
