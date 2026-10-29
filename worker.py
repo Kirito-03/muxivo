@@ -300,7 +300,7 @@ def is_allowed_media_url(raw: str) -> bool:
     if _OPEN_URL_POLICY:
         return True  # Acepta cualquier URL pública
     # Modo restringido: solo plataformas conocidas
-    clean_host = host.replace("www.", "").replace("m.", "")
+    clean_host = re.sub(r"^(?:www\.|m\.)", "", host)
     return any(clean_host == a or clean_host.endswith(f".{a}") for a in _KNOWN_PLATFORMS)
 
 
@@ -308,7 +308,7 @@ def detect_platform(raw: str) -> str:
     """Detecta la plataforma: youtube | tiktok | instagram | soundcloud | spotify | twitter | twitch | vimeo | reddit | bilibili | facebook | unknown."""
     try:
         u = urlparse(raw)
-        host = (u.hostname or "").lower().replace("www.", "").replace("m.", "")
+        host = re.sub(r"^(?:www\.|m\.)", "", (u.hostname or "").lower())
     except Exception:
         return "unknown"
     if host in ("youtu.be",) or host.endswith("youtube.com"):
@@ -345,7 +345,7 @@ def detect_platform(raw: str) -> str:
 def extract_youtube_id(raw: str) -> Optional[str]:
     try:
         u = urlparse(raw)
-        host = (u.hostname or "").lower().replace("www.", "").replace("m.", "")
+        host = re.sub(r"^(?:www\.|m\.)", "", (u.hostname or "").lower())
         if host == "youtu.be":
             vid = u.path.strip("/").split("/")[0]
             return vid or None

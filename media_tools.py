@@ -1657,6 +1657,13 @@ def download_images_with_ytdlp(
                         except Exception:
                             return s.split("?", 1)[0].rsplit("/", 1)[-1].lower()
 
+                    def _is_cropped_ig_url(u: str) -> bool:
+                        low = str(u or "").lower()
+                        return bool(re.search(r"(?:[?&]stp=[^&#]*c\d+\.\d+|[/_]s\d+x\d+|[?&]stp=[^&#]*s\d+x\d+)", low))
+
+                    fast_ig = _instagram_post_fast_embed(url, timeout=8, cookies_path=cookies_path)
+                    fast_imgs = [str(iu or "").strip() for iu in (fast_ig.get("images") or []) if str(iu or "").strip()]
+
                     if selected_image_urls is not None:
                         for u in (selected_image_urls or []):
                             su = str(u or "").strip()
@@ -1665,36 +1672,39 @@ def download_images_with_ytdlp(
                                 if ext not in IMAGE_EXTS:
                                     ext = "jpg"
                                 candidates.append({"url": su, "ext": ext})
-                        try:
-                            ig_pw_best = _instagram_post_probe_playwright(url, timeout=22, cookies_path=cookies_path)
-                        except Exception:
-                            ig_pw_best = {}
                         best_map: Dict[str, str] = {}
-                        if isinstance(ig_pw_best, dict):
-                            for iu in (ig_pw_best.get("images") or []):
-                                su = str(iu or "").strip()
-                                k0 = _ig_key(su)
-                                if k0 and su:
-                                    best_map[k0] = su
+                        source_imgs = fast_imgs
+                        if not source_imgs and any(_is_cropped_ig_url(c.get("url", "")) for c in candidates):
+                            try:
+                                ig_pw_best = _instagram_post_probe_playwright(url, timeout=18, cookies_path=cookies_path)
+                                source_imgs = [str(iu or "").strip() for iu in (ig_pw_best.get("images") or []) if str(iu or "").strip()]
+                            except Exception:
+                                source_imgs = []
+                        for su in source_imgs:
+                            k0 = _ig_key(su)
+                            if k0 and su and not _is_cropped_ig_url(su):
+                                best_map[k0] = su
                         if best_map and candidates:
                             for c in candidates:
                                 cu = str(c.get("url") or "").strip()
                                 k0 = _ig_key(cu)
                                 better = best_map.get(k0)
-                                if better and better != cu:
+                                if better and better != cu and (_is_cropped_ig_url(cu) or not _is_cropped_ig_url(better)):
                                     c["url"] = better
                                     c["ext"] = _guess_ext_from_url(better, str(c.get("ext") or "jpg")).lower()
                     if not candidates:
-                        ig_pw = _instagram_post_probe_playwright(url, timeout=22, cookies_path=cookies_path)
-                        if str(ig_pw.get("media_type") or "").lower() in ("image", "gallery"):
-                            for iu in (ig_pw.get("images") or []):
-                                su = str(iu or "").strip()
-                                if not su:
-                                    continue
-                                ext = _guess_ext_from_url(su, "jpg").lower()
-                                if ext not in IMAGE_EXTS:
-                                    ext = "jpg"
-                                candidates.append({"url": su, "ext": ext})
+                        source_imgs = fast_imgs
+                        if not source_imgs:
+                            ig_pw = _instagram_post_probe_playwright(url, timeout=22, cookies_path=cookies_path)
+                            if str(ig_pw.get("media_type") or "").lower() in ("image", "gallery"):
+                                source_imgs = [str(iu or "").strip() for iu in (ig_pw.get("images") or []) if str(iu or "").strip()]
+                        for su in source_imgs:
+                            if not su:
+                                continue
+                            ext = _guess_ext_from_url(su, "jpg").lower()
+                            if ext not in IMAGE_EXTS:
+                                ext = "jpg"
+                            candidates.append({"url": su, "ext": ext})
                     if candidates:
                         if selected_image_urls is not None:
                             sel = {str(u).strip() for u in (selected_image_urls or []) if str(u).strip()}
@@ -3101,7 +3111,7 @@ def _instagram_post_probe_playwright(
         return dict(cached_ig[1])
 
     # 1. Fast HTTP embed check (~0.4s, isolates only the post itself without "More posts from @user")
-    fast_res = _instagram_post_fast_embed(url, timeout=6)
+    fast_res = _instagram_post_fast_embed(url, timeout=6, cookies_path=cookies_path)
     if fast_res.get("media_type") in ("image", "gallery", "video"):
         _IG_PROBE_CACHE[sc_key] = (now_ts, fast_res)
         return dict(fast_res)

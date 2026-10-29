@@ -84,7 +84,10 @@ export default function VideoDetectionView({
           ? mediaData.summary
           : `${mediaData?.platform || 'Video'} detectado`);
 
-  const currentThumbnail = mediaData?.thumbnail || null;
+  const rawThumbnail = mediaData?.thumbnail || null;
+  const currentThumbnail = rawThumbnail
+    ? (rawThumbnail.startsWith('/') ? rawThumbnail : `/api/thumb?url=${encodeURIComponent(rawThumbnail)}`)
+    : null;
 
   const handleCopy = () => {
     if (navigator.clipboard && mediaData?.url) {

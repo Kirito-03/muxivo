@@ -112,15 +112,15 @@ export default function ImageDetectionView({
       {/* 2. Image Content Card with Carousel */}
       <div className="relative w-full bg-[#1b2024] rounded-2xl p-5 sm:p-6 shadow-xl border border-[#1E3640] flex flex-col gap-4">
         {/* Preview with Navigation */}
-        <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#090f12] shadow-inner border border-[#1E3640]/50 group">
+        <div className="relative w-full min-h-[260px] max-h-[520px] rounded-xl overflow-hidden bg-[#090f12] shadow-inner border border-[#1E3640]/50 group flex items-center justify-center">
           {rawPhotos[photoIndex] ? (
             <img
               src={toPreviewUrl(rawPhotos[photoIndex])}
               alt={`Foto ${photoIndex + 1}`}
-              className="w-full h-full object-contain bg-[#090f12] transition-all duration-300"
+              className="w-full max-h-[520px] object-contain bg-[#090f12] transition-all duration-300"
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center text-[#5fd0c8]/40">
+            <div className="w-full h-64 flex items-center justify-center text-[#5fd0c8]/40">
               <span className="material-symbols-outlined text-[48px]">image</span>
             </div>
           )}
@@ -158,10 +158,50 @@ export default function ImageDetectionView({
           )}
         </div>
 
+        {/* Thumbnail Strip for Multi-Photo Galleries */}
+        {isMultiPhoto && (
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5 scrollbar-thin">
+            {rawPhotos.map((u, idx) => {
+              const active = idx === photoIndex;
+              return (
+                <button
+                  key={`${idx}-${u}`}
+                  type="button"
+                  onClick={() => setPhotoIndex(idx)}
+                  className={`relative w-16 h-20 rounded-lg overflow-hidden shrink-0 border-2 transition-all ${
+                    active
+                      ? 'border-[#5fd0c8] shadow-[0_0_10px_rgba(95,208,200,0.4)] scale-[1.03]'
+                      : 'border-[#1E3640] opacity-65 hover:opacity-100'
+                  }`}
+                  title={`Ver foto ${idx + 1}`}
+                >
+                  <img
+                    src={toPreviewUrl(u)}
+                    alt={`Miniatura ${idx + 1}`}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                  <span className="absolute bottom-1 right-1 px-1.5 py-0.2 rounded bg-[#090f12]/85 text-[10px] font-mono text-[#dee3e7]">
+                    {idx + 1}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Info & Badges */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-mono text-[#bcc9c7]">{mediaData?.platform}</span>
+            <div className="flex items-center gap-2 text-xs font-mono text-[#bcc9c7]">
+              <span className="text-[#7dece4] font-semibold">{mediaData?.platform}</span>
+              {mediaData?.creator && (
+                <>
+                  <span>•</span>
+                  <span>{mediaData.creator}</span>
+                </>
+              )}
+            </div>
             <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-mono text-xs font-semibold border border-amber-500/30">
               {isMultiPhoto ? `Galería (${totalPhotos})` : 'Imagen'}
             </span>

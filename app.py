@@ -1484,8 +1484,18 @@ def api_thumb():
     if not _is_safe_public_url(u):
         abort(403)
 
+    if not ref:
+        if "cdninstagram.com" in host or "fbcdn.net" in host or "instagram.com" in host:
+            ref = "https://www.instagram.com/"
+        elif "pinimg.com" in host or "pinterest." in host:
+            ref = "https://www.pinterest.com/"
+        elif "tiktokcdn" in host or "tiktok.com" in host:
+            ref = "https://www.tiktok.com/"
+
     cached = _cache_preview_image(u, referer=ref)
-    if not cached:
+    if not cached and ref != "https://www.instagram.com/":
+        cached = _cache_preview_image(u, referer="https://www.instagram.com/")
+    if not cached and ref != "https://www.tiktok.com/":
         cached = _cache_preview_image(u, referer="https://www.tiktok.com/")
     if not cached:
         cached = _cache_preview_image(u, referer=None)
