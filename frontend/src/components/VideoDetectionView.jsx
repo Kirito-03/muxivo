@@ -26,6 +26,7 @@ export default function VideoDetectionView({
   mediaData,
   onChangeUrl,
   onStartDownload,
+  onUpdateMediaData,
   recentDownloads = [],
   onRedownload,
   sessionId,
@@ -35,6 +36,7 @@ export default function VideoDetectionView({
   const [selectedQuality, setSelectedQuality] = useState(DEFAULT_VIDEO_OPTIONS[0]);
   const [loadingOpts, setLoadingOpts] = useState(true);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [imgError, setImgError] = useState(false);
 
   // Fetch real format/quality options from /api/options
   useEffect(() => {
@@ -48,6 +50,22 @@ export default function VideoDetectionView({
         setVideoOptions(built);
         setSelectedQuality(built[0]);
         setLoadingOpts(false);
+
+        if (opts && onUpdateMediaData) {
+          const updates = {};
+          if (opts.title && (!mediaData.title || mediaData.title.toLowerCase().includes('detectado'))) {
+            updates.title = opts.title;
+          }
+          if (opts.thumbnail && !mediaData.thumbnail) {
+            updates.thumbnail = opts.thumbnail;
+          }
+          if ((opts.creator || opts.uploader) && !mediaData.creator) {
+            updates.creator = opts.creator || opts.uploader;
+          }
+          if (Object.keys(updates).length > 0) {
+            onUpdateMediaData(updates);
+          }
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -58,6 +76,15 @@ export default function VideoDetectionView({
 
     return () => { cancelled = true; };
   }, [mediaData.url]);
+
+  const displayTitle =
+    mediaData?.title && !mediaData.title.toLowerCase().startsWith('video detectado')
+      ? mediaData.title
+      : (mediaData?.summary && !mediaData.summary.toLowerCase().startsWith('video detectado')
+          ? mediaData.summary
+          : `${mediaData?.platform || 'Video'} detectado`);
+
+  const currentThumbnail = mediaData?.thumbnail || null;
 
   const handleCopy = () => {
     if (navigator.clipboard && mediaData?.url) {
@@ -74,10 +101,10 @@ export default function VideoDetectionView({
       format_id: 'mp4',
       detail: selectedQuality.id,
       sessionId,
-      title: mediaData.title || mediaData.platform,
+      title: displayTitle,
       platform: mediaData.platform,
       type: 'video',
-      thumbnail: mediaData.thumbnail || null,
+      thumbnail: currentThumbnail,
       format: `Video MP4 • ${selectedQuality.label}`,
     });
   };
@@ -89,10 +116,10 @@ export default function VideoDetectionView({
       format_id: 'mp3',
       detail: '320',
       sessionId,
-      title: mediaData.title || mediaData.platform,
+      title: displayTitle,
       platform: mediaData.platform,
       type: 'audio',
-      thumbnail: mediaData.thumbnail || null,
+      thumbnail: currentThumbnail,
       format: 'Audio MP3 • 320 kbps',
     });
   };
@@ -114,8 +141,8 @@ export default function VideoDetectionView({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-[#7dece4]">Enlace analizado</span>
-                  <span className="text-[#bcc9c7] text-xs font-mono">
-                    • {mediaData.platform} — {mediaData.summary || 'Video detectado'}
+                  <span className="text-[#bcc9c7] text-xs font-mono truncate max-w-sm" title={displayTitle}>
+                    • {mediaData.platform} — {displayTitle}
                   </span>
                 </div>
                 <p className="font-mono text-xs text-[#dee3e7] truncate select-all" title={mediaData?.url}>
@@ -148,26 +175,33 @@ export default function VideoDetectionView({
 
           {/* 2. Content Detection Card */}
           <div className="bg-[#1b2024] border border-[#1E3640] rounded-2xl p-4 sm:p-6 shadow-xl flex flex-col gap-5">
-            {/* Thumbnail placeholder */}
+            {/* Thumbnail Display */}
             <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#090f12] shadow-2xl group border border-[#1E3640]/50 flex items-center justify-center">
-              {mediaData.thumbnail ? (
-                <img
-                  src={mediaData.thumbnail}
-                  alt={mediaData.title}
-                  className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
-                />
+              {currentThumbnail && !imgError ? (
+                <>
+                  <img
+                    src={currentThumbnail}
+                    alt={displayTitle}
+                    onError={() => setImgError(true)}
+                    className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500 ease-out"
+                    loading="eager"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#090f12]/90 via-[#090f12]/20 to-transparent pointer-events-none"></div>
+                </>
               ) : (
-                <span className="material-symbols-outlined text-[64px] text-[#5fd0c8]/20">smart_display</span>
+                <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#131b20] to-[#090f12] text-[#5fd0c8]/30">
+                  <span className="material-symbols-outlined text-[64px]">smart_display</span>
+                  <span className="font-mono text-xs mt-2 text-[#5fd0c8]/40">Vista previa de video</span>
+                </div>
               )}
-              <div className="absolute inset-0 bg-gradient-to-t from-[#090f12]/90 via-[#090f12]/20 to-transparent pointer-events-none"></div>
 
               {/* Media Badge Overlays */}
               <div className="absolute top-3 left-3 sm:top-4 sm:left-4 flex items-center gap-2">
-                <span className="px-3 py-1.5 rounded-full bg-[#303639]/90 backdrop-blur-md text-[#6FB8E8] font-mono text-xs font-semibold flex items-center gap-1.5 shadow-md border border-[#6FB8E8]/30">
+                <span className="px-3 py-1.5 rounded-full bg-[#1b2024]/90 backdrop-blur-md text-[#6FB8E8] font-mono text-xs font-semibold flex items-center gap-1.5 shadow-md border border-[#6FB8E8]/30">
                   <span className="material-symbols-outlined text-[16px]">smart_display</span>
                   <span>Video</span>
                 </span>
-                <span className="px-3 py-1.5 rounded-full bg-[#303639]/90 backdrop-blur-md text-[#dee3e7] font-mono text-xs font-medium border border-[#1E3640]">
+                <span className="px-3 py-1.5 rounded-full bg-[#1b2024]/90 backdrop-blur-md text-[#dee3e7] font-mono text-xs font-medium border border-[#1E3640]">
                   {mediaData?.platform}
                 </span>
               </div>
@@ -177,15 +211,15 @@ export default function VideoDetectionView({
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2 text-[#bcc9c7] text-xs font-mono">
                 <span className="text-[#7dece4] font-medium">{mediaData?.platform}</span>
-                {mediaData.summary && (
+                {mediaData?.creator && (
                   <>
                     <span>•</span>
-                    <span className="text-[#dee3e7] truncate">{mediaData.summary}</span>
+                    <span className="text-[#dee3e7] truncate">{mediaData.creator}</span>
                   </>
                 )}
               </div>
-              <h1 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug">
-                {mediaData?.summary || mediaData?.platform || 'Video detectado'}
+              <h1 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug line-clamp-2" title={displayTitle}>
+                {displayTitle}
               </h1>
               {mediaData.message && (
                 <div className="mt-2 p-3 rounded-xl bg-[#252b2e] border border-[#f0c060]/40 text-[#f0c060] text-xs font-mono">

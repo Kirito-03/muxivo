@@ -947,6 +947,14 @@ def api_options():
         "detail_value": detected.get("detail_value") or DEFAULTS[requested_kind]["detail_value"],
         "detected_from_source": True,
     }
+    if detected.get("title"):
+        result["title"] = detected["title"]
+    if detected.get("thumbnail"):
+        result["thumbnail"] = detected["thumbnail"]
+    if detected.get("uploader"):
+        result["creator"] = detected["uploader"]
+    if detected.get("duration"):
+        result["duration"] = detected["duration"]
     return jsonify(result)
 
 
@@ -1060,6 +1068,9 @@ def api_detect():
         items: Optional[List[Dict[str, str]]] = None,
         files: Optional[List[Dict[str, str]]] = None,
         summary: Optional[str] = None,
+        title: Optional[str] = None,
+        thumbnail: Optional[str] = None,
+        creator: Optional[str] = None,
         message: Optional[str] = None,
         error: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -1102,6 +1113,9 @@ def api_detect():
             "platform": platform,
             "resolved_url": resolved_url,
             "summary": summary,
+            "title": title or summary,
+            "thumbnail": thumbnail,
+            "creator": creator,
             "detected_kind": detected_kind,
             "allowed_kinds": allowed_kinds,
             "image_candidates": items_list,
@@ -1335,6 +1349,23 @@ def api_detect():
             except Exception as wk_exc:
                 _log.warning("[WORKER] Instagram gallery detect: worker failed: %s", wk_exc)
 
+    meta_title = caps.get("title")
+    meta_thumb = caps.get("thumbnail")
+    meta_creator = caps.get("uploader") or caps.get("creator")
+    if not meta_title or not meta_thumb:
+        try:
+            from media_tools import fetch_fast_metadata
+
+            fast_m = fetch_fast_metadata(first_url)
+            if not meta_title and fast_m.get("title"):
+                meta_title = fast_m["title"]
+            if not meta_thumb and fast_m.get("thumbnail"):
+                meta_thumb = fast_m["thumbnail"]
+            if not meta_creator and fast_m.get("creator"):
+                meta_creator = fast_m["creator"]
+        except Exception:
+            pass
+
     return jsonify(
         _detect_payload(
             platform=platform,
@@ -1342,7 +1373,10 @@ def api_detect():
             detected_kind=detected_front,
             allowed_kinds=allowed_front or None,
             items=image_candidates,
-            summary=summary,
+            summary=meta_title or summary,
+            title=meta_title,
+            thumbnail=meta_thumb,
+            creator=meta_creator,
             message=(
                 resolve_note
                 or (

@@ -10,11 +10,13 @@ export default function AudioDetectionView({
   mediaData,
   onChangeUrl,
   onStartDownload,
+  onUpdateMediaData,
   sessionId,
 }) {
   const [audioOptions, setAudioOptions] = useState(DEFAULT_AUDIO_OPTIONS);
   const [selectedFormat, setSelectedFormat] = useState(DEFAULT_AUDIO_OPTIONS[0]);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,10 +32,35 @@ export default function AudioDetectionView({
         }));
         setAudioOptions(built);
         setSelectedFormat(built[0]);
+
+        if (opts && onUpdateMediaData) {
+          const updates = {};
+          if (opts.title && (!mediaData.title || mediaData.title.toLowerCase().includes('detectado'))) {
+            updates.title = opts.title;
+          }
+          if (opts.thumbnail && !mediaData.thumbnail) {
+            updates.thumbnail = opts.thumbnail;
+          }
+          if ((opts.creator || opts.uploader) && !mediaData.creator) {
+            updates.creator = opts.creator || opts.uploader;
+          }
+          if (Object.keys(updates).length > 0) {
+            onUpdateMediaData(updates);
+          }
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [mediaData.url]);
+
+  const displayTitle =
+    mediaData?.title && !mediaData.title.toLowerCase().startsWith('audio detectado')
+      ? mediaData.title
+      : (mediaData?.summary && !mediaData.summary.toLowerCase().startsWith('audio detectado')
+          ? mediaData.summary
+          : `${mediaData?.platform || 'Audio'} detectado`);
+
+  const currentThumbnail = mediaData?.thumbnail || null;
 
   const handleCopy = () => {
     if (navigator.clipboard && mediaData?.url) {
@@ -50,10 +77,10 @@ export default function AudioDetectionView({
       format_id: selectedFormat.id,
       detail: selectedFormat.id === 'mp3' ? '320' : '256',
       sessionId,
-      title: mediaData.title || mediaData.platform,
+      title: displayTitle,
       platform: mediaData.platform,
       type: 'audio',
-      thumbnail: mediaData.thumbnail || null,
+      thumbnail: currentThumbnail,
       format: `Audio ${selectedFormat.label} • ${selectedFormat.quality || '320 kbps'}`,
     });
   };
@@ -92,13 +119,24 @@ export default function AudioDetectionView({
       {/* 2. Audio Content Card */}
       <div className="relative w-full bg-[#1b2024] rounded-2xl p-5 sm:p-6 shadow-xl border border-[#1E3640] flex flex-col gap-4">
         {/* Album Art / Thumbnail 16:9 */}
-        <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#090f12] shadow-inner border border-[#1E3640]/50 group">
-          <img
-            src={mediaData?.thumbnail}
-            alt={mediaData?.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#090f12]/80 via-transparent to-transparent"></div>
+        <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#090f12] shadow-inner border border-[#1E3640]/50 group flex items-center justify-center">
+          {currentThumbnail && !imgError ? (
+            <>
+              <img
+                src={currentThumbnail}
+                alt={displayTitle}
+                onError={() => setImgError(true)}
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                loading="eager"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#090f12]/80 via-transparent to-transparent"></div>
+            </>
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#131b20] to-[#090f12] text-[#5FD99A]/30">
+              <span className="material-symbols-outlined text-[64px]">audiotrack</span>
+              <span className="font-mono text-xs mt-2 text-[#5FD99A]/40">Pista de audio</span>
+            </div>
+          )}
 
           {/* Floating Audio Play Icon */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -123,11 +161,11 @@ export default function AudioDetectionView({
 
         {/* Title & Artist */}
         <div>
-          <h2 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug">
-            {mediaData?.title}
+          <h2 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug line-clamp-2" title={displayTitle}>
+            {displayTitle}
           </h2>
           <p className="text-sm font-mono text-[#bcc9c7] mt-1">
-            {mediaData?.creator} • Audio estéreo
+            {mediaData?.creator || mediaData?.platform} • Audio estéreo
           </p>
         </div>
 

@@ -37,6 +37,15 @@ function kindToType(kind) {
   return 'video';
 }
 
+function getFastThumbnail(url) {
+  if (!url) return null;
+  const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  if (m) {
+    return `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg`;
+  }
+  return null;
+}
+
 export default function App() {
   const pwa = usePwaInstall();
   const [currentTab, setCurrentTab] = useState('descargar');
@@ -71,6 +80,10 @@ export default function App() {
     refreshHistory();
   }, [refreshHistory]);
 
+  const handleUpdateMediaData = useCallback((updates) => {
+    setMediaData((prev) => (prev ? { ...prev, ...updates } : prev));
+  }, []);
+
   // Handle URL analysis — calls the real /api/detect endpoint
   const handleAnalyzeUrl = useCallback(async (rawUrl) => {
     const url = (rawUrl || '').trim();
@@ -101,6 +114,15 @@ export default function App() {
       const platform = platformLabel(result.platform);
       const resolvedUrl = result.resolved_url || url;
 
+      const realTitle =
+        result.title ||
+        (result.summary && result.summary !== 'Video detectado' && result.summary !== 'Audio detectado'
+          ? result.summary
+          : null) ||
+        platform;
+      const realThumb = result.thumbnail || getFastThumbnail(url) || null;
+      const realCreator = result.creator || result.uploader || null;
+
       const normalized = {
         type: detectedType,
         url,
@@ -117,10 +139,10 @@ export default function App() {
         preFiles: result.files || [],
         // These will be filled in by the detection view after /api/options
         options: null,
-        // Placeholder metadata — detection views fetch real options
-        title: result.summary || platform,
-        creator: null,
-        thumbnail: null,
+        // Real metadata
+        title: realTitle,
+        creator: realCreator,
+        thumbnail: realThumb,
       };
 
       setMediaData(normalized);
@@ -235,6 +257,7 @@ export default function App() {
                       mediaData={mediaData}
                       onChangeUrl={handleResetToInput}
                       onStartDownload={handleStartDownload}
+                      onUpdateMediaData={handleUpdateMediaData}
                       recentDownloads={history}
                       onRedownload={handleRedownload}
                       sessionId={sessionId}
@@ -245,6 +268,7 @@ export default function App() {
                       mediaData={mediaData}
                       onChangeUrl={handleResetToInput}
                       onStartDownload={handleStartDownload}
+                      onUpdateMediaData={handleUpdateMediaData}
                       sessionId={sessionId}
                     />
                   )}

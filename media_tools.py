@@ -3226,6 +3226,114 @@ def _normalize_tiktok_photo_image_url(u: str) -> str:
     return s
 
 
+def fetch_fast_metadata(url: str) -> Dict[str, Any]:
+    """Extract quick title, thumbnail and author/channel using oEmbed or URL pattern."""
+    out: Dict[str, Any] = {"title": None, "thumbnail": None, "creator": None, "platform": None}
+    if not url:
+        return out
+
+    try:
+        import requests
+        import re
+
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = p.path or ""
+
+        # 1. YouTube
+        if "youtube.com" in host or "youtu.be" in host:
+            out["platform"] = "youtube"
+            vid = None
+            if "youtu.be" in host:
+                vid = path.strip("/").split("/")[0] if path.strip("/") else None
+            elif "/shorts/" in path:
+                parts = path.split("/")
+                vid = parts[2] if len(parts) >= 3 else None
+            else:
+                m = re.search(r"[?&]v=([0-9A-Za-z_-]{11})", url)
+                if m:
+                    vid = m.group(1)
+
+            if vid:
+                out["thumbnail"] = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+
+            # Fast oEmbed query
+            norm_yt = f"https://www.youtube.com/watch?v={vid}" if vid else url
+            try:
+                r = requests.get(
+                    f"https://www.youtube.com/oembed?url={norm_yt}&format=json",
+                    timeout=2.0,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    out["title"] = data.get("title")
+                    out["creator"] = data.get("author_name")
+                    if data.get("thumbnail_url"):
+                        out["thumbnail"] = data.get("thumbnail_url")
+            except Exception:
+                pass
+
+        # 2. TikTok
+        elif "tiktok.com" in host:
+            out["platform"] = "tiktok"
+            try:
+                r = requests.get(
+                    f"https://www.tiktok.com/oembed?url={url}",
+                    timeout=2.5,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    out["title"] = data.get("title")
+                    out["creator"] = data.get("author_name")
+                    if data.get("thumbnail_url"):
+                        out["thumbnail"] = data.get("thumbnail_url")
+            except Exception:
+                pass
+
+        # 3. SoundCloud
+        elif "soundcloud.com" in host:
+            out["platform"] = "soundcloud"
+            try:
+                r = requests.get(
+                    f"https://soundcloud.com/oembed?url={url}&format=json",
+                    timeout=2.0,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    out["title"] = data.get("title")
+                    out["creator"] = data.get("author_name")
+                    if data.get("thumbnail_url"):
+                        out["thumbnail"] = data.get("thumbnail_url")
+            except Exception:
+                pass
+
+        # 4. Vimeo
+        elif "vimeo.com" in host:
+            out["platform"] = "vimeo"
+            try:
+                r = requests.get(
+                    f"https://vimeo.com/api/oembed.json?url={url}",
+                    timeout=2.0,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    out["title"] = data.get("title")
+                    out["creator"] = data.get("author_name")
+                    if data.get("thumbnail_url"):
+                        out["thumbnail"] = data.get("thumbnail_url")
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    return out
+
+
 def probe_download_options(
     raw_input: str,
     kind: str,
@@ -3263,6 +3371,11 @@ def probe_download_options(
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
+    info_title = info.get("title")
+    info_thumb = info.get("thumbnail")
+    info_uploader = info.get("uploader") or info.get("channel")
+    info_duration = info.get("duration")
+
     formats = info.get("formats") or []
     if kind == "video":
         STANDARD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
@@ -3286,6 +3399,10 @@ def probe_download_options(
             "detail_value": choices[0],
             "format_choices": ["mp4", "mkv", "webm"],
             "format_value": "mp4",
+            "title": info_title,
+            "thumbnail": info_thumb,
+            "uploader": info_uploader,
+            "duration": info_duration,
         }
 
     if kind == "audio":
@@ -3311,6 +3428,10 @@ def probe_download_options(
             "detail_value": choices[0],
             "format_choices": ["mp3", "m4a", "ogg", "opus", "wav", "flac"],
             "format_value": "mp3",
+            "title": info_title,
+            "thumbnail": info_thumb,
+            "uploader": info_uploader,
+            "duration": info_duration,
         }
 
     return {}
@@ -3336,6 +3457,25 @@ def probe_media_capabilities(
         platform = "tiktok"
     elif "instagram.com" in host:
         platform = "instagram"
+
+    # Fast detection for YouTube (under 200ms with real title and thumbnail)
+    if platform == "youtube":
+        fast_meta = fetch_fast_metadata(url)
+        return {
+            "url": url,
+            "platform": "youtube",
+            "supports_audio": True,
+            "supports_video": True,
+            "supports_image": False,
+            "allowed_kinds": ["audio", "video"],
+            "detected_kind": "video",
+            "summary": fast_meta.get("title") or "YouTube: video detectado",
+            "title": fast_meta.get("title"),
+            "thumbnail": fast_meta.get("thumbnail"),
+            "uploader": fast_meta.get("creator"),
+            "auth_required": False,
+            "used_cookies": False,
+        }
 
     if platform == "tiktok" and "/photo/" in path:
         return {
@@ -3373,6 +3513,9 @@ def probe_media_capabilities(
     supports_audio = False
     detected_kind = "audio"
     summary = "Sin detección"
+    title: Optional[str] = None
+    thumbnail: Optional[str] = None
+    uploader: Optional[str] = None
     auth_required = False
     used_cookies = False
 
@@ -3420,6 +3563,10 @@ def probe_media_capabilities(
                 summary = "Instagram requiere autenticación adicional."
             raise RuntimeError("no_info")
 
+        title = info.get("title")
+        thumbnail = info.get("thumbnail")
+        uploader = info.get("uploader") or info.get("creator") or info.get("channel")
+
         formats = info.get("formats") or []
         supports_video = any(
             (fmt.get("vcodec") not in (None, "none")) and (fmt.get("height") or (fmt.get("ext") or "").lower() in VIDEO_EXTS)
@@ -3445,17 +3592,17 @@ def probe_media_capabilities(
             supports_image = False
             supports_video, supports_audio = True, True
             detected_kind = "video"
-            summary = "Instagram reel: video"
+            summary = title or "Instagram reel: video"
         elif is_instagram_post:
             if supports_video:
                 supports_image = False
                 supports_audio = True
                 detected_kind = "video"
-                summary = "Instagram post: video detectado"
+                summary = title or "Instagram post: video detectado"
             elif supports_image:
                 supports_video, supports_audio = False, False
                 detected_kind = "imagen"
-                summary = "Instagram post: imagen/carrusel detectado"
+                summary = title or "Instagram post: imagen/carrusel detectado"
             else:
                 auth_required = bool(auth_failed)
                 supports_image = True
@@ -3466,44 +3613,67 @@ def probe_media_capabilities(
         else:
             if supports_image and not supports_video:
                 detected_kind = "imagen"
-                summary = "Post de imagen/carrusel detectado"
+                summary = title or "Post de imagen/carrusel detectado"
             elif supports_video:
                 detected_kind = "video"
-                summary = "Video detectado"
+                summary = title or "Video detectado"
             elif supports_audio:
                 detected_kind = "audio"
-                summary = "Audio detectado"
+                summary = title or "Audio detectado"
     except Exception as e:
         if platform == "instagram" and _is_auth_error(str(e)):
             auth_required = True
+        # Fast metadata fallback
+        fast_meta = fetch_fast_metadata(url)
+        if fast_meta.get("title"):
+            title = fast_meta["title"]
+            summary = title
+        if fast_meta.get("thumbnail"):
+            thumbnail = fast_meta["thumbnail"]
+        if fast_meta.get("creator"):
+            uploader = fast_meta["creator"]
+
         # Fallback heurístico por URL cuando el extractor no responda.
         if platform == "youtube":
             supports_video, supports_audio, supports_image = True, True, False
-            detected_kind, summary = "video", "YouTube: se asume video/audio"
+            detected_kind = "video"
+            if not summary or summary == "Sin detección":
+                summary = "YouTube: se asume video/audio"
         elif platform == "instagram":
             if "/reel/" in path:
                 supports_video, supports_audio, supports_image = True, True, False
-                detected_kind, summary = "video", "Instagram reel: video/audio"
+                detected_kind = "video"
+                if not summary or summary == "Sin detección":
+                    summary = "Instagram reel: video/audio"
             elif "/p/" in path:
                 if auth_required:
                     supports_video, supports_audio, supports_image = False, False, True
-                    detected_kind, summary = "imagen", "Instagram requiere autenticación válida para acceder a este contenido."
+                    detected_kind = "imagen"
+                    summary = "Instagram requiere autenticación válida para acceder a este contenido."
                 else:
                     supports_video, supports_audio, supports_image = True, False, True
-                    detected_kind, summary = "imagen", "Instagram post: no se pudo determinar (elige IMAGE o VIDEO)."
+                    detected_kind = "imagen"
+                    summary = "Instagram post: no se pudo determinar (elige IMAGE o VIDEO)."
             else:
                 supports_video, supports_audio, supports_image = True, True, False
-                detected_kind, summary = "video", "Instagram: se asume video/audio"
+                detected_kind = "video"
+                if not summary or summary == "Sin detección":
+                    summary = "Instagram: se asume video/audio"
         elif platform == "tiktok":
             if "/photo/" in path:
                 supports_video, supports_audio, supports_image = False, False, True
-                detected_kind, summary = "imagen", "TikTok photo: se asume imagen/carrusel"
+                detected_kind = "imagen"
+                summary = "TikTok photo: se asume imagen/carrusel"
             else:
                 supports_video, supports_audio, supports_image = True, True, True
-                detected_kind, summary = "video", "TikTok: compatibilidad mixta"
+                detected_kind = "video"
+                if not summary or summary == "Sin detección":
+                    summary = "TikTok: compatibilidad mixta"
         else:
             supports_video, supports_audio, supports_image = True, True, False
-            detected_kind, summary = "video", f"Fallback por error de detección: {type(e).__name__}"
+            detected_kind = "video"
+            if not summary or summary == "Sin detección":
+                summary = f"Fallback por error de detección: {type(e).__name__}"
 
     allowed_kinds: List[str] = []
     if supports_audio:
@@ -3524,6 +3694,9 @@ def probe_media_capabilities(
         "allowed_kinds": allowed_kinds,
         "detected_kind": detected_kind if detected_kind in allowed_kinds else allowed_kinds[0],
         "summary": summary,
+        "title": title or (summary if summary not in ("Sin detección", "Video detectado", "Audio detectado") else None),
+        "thumbnail": thumbnail,
+        "uploader": uploader,
         "auth_required": auth_required,
         "used_cookies": used_cookies,
     }
