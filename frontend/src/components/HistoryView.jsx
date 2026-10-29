@@ -25,6 +25,22 @@ function formatTimestamp(ts) {
   }
 }
 
+function getDownloadUrl(url, name) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.set('download', '1');
+    if (name) {
+      parsed.searchParams.set('name', name);
+    }
+    return parsed.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    const nameParam = name ? `&name=${encodeURIComponent(name)}` : '';
+    return `${url}${sep}download=1${nameParam}`;
+  }
+}
+
 export default function HistoryView({ history = [], loading = false, onClearHistory, onRedownload }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterKind, setFilterKind] = useState('todos');
@@ -208,7 +224,7 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                         {item.files.slice(0, 3).map((f, fi) => (
                           <a
                             key={fi}
-                            href={f.url}
+                            href={getDownloadUrl(f.url, f.name)}
                             download={f.name}
                             className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#5fd0c8]/10 border border-[#5fd0c8]/30 text-[#5fd0c8] text-[11px] font-mono hover:bg-[#5fd0c8]/20 transition-colors"
                             title={`Descargar ${f.name}`}
@@ -231,7 +247,7 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                 {/* ZIP download strictly for multi-image galleries */}
                 {item.kind === 'image' && item.zip && (
                   <a
-                    href={item.zip.url}
+                    href={getDownloadUrl(item.zip.url, item.zip.name)}
                     download={item.zip.name}
                     className="shrink-0 flex items-center gap-2 px-3.5 py-2 bg-[#5fd0c8]/15 hover:bg-[#5fd0c8] text-[#7dece4] hover:text-[#041014] border border-[#5fd0c8]/30 rounded-xl text-xs font-semibold font-mono transition-all shadow-[0_0_12px_rgba(95,208,200,0.12)] hover:shadow-[0_0_16px_rgba(95,208,200,0.3)] active:scale-95"
                     title="Descargar ZIP"
@@ -245,7 +261,7 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                 {/* Direct download button for single files (video, audio, or single photo) */}
                 {!(item.kind === 'image' && item.zip) && item.files && item.files.length === 1 && (
                   <a
-                    href={item.files[0].url}
+                    href={getDownloadUrl(item.files[0].url, item.files[0].name)}
                     download={item.files[0].name}
                     className="shrink-0 flex items-center gap-2 px-3.5 py-2 bg-[#5fd0c8]/15 hover:bg-[#5fd0c8] text-[#7dece4] hover:text-[#041014] border border-[#5fd0c8]/30 rounded-xl text-xs font-semibold font-mono transition-all shadow-[0_0_12px_rgba(95,208,200,0.12)] hover:shadow-[0_0_16px_rgba(95,208,200,0.3)] active:scale-95"
                     title={`Descargar ${item.files[0].name}`}

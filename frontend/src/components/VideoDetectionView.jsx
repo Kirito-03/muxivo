@@ -365,19 +365,6 @@ export default function VideoDetectionView({
           </div>
         </aside>
       </div>
-
-      {/* Sticky Bottom Action Bar on Mobile */}
-      <div className="md:hidden fixed bottom-16 left-0 right-0 z-40 px-4 py-2 bg-gradient-to-t from-[#060B0E] via-[#060B0E]/95 to-transparent">
-        <button
-          onClick={handleDownloadVideo}
-          disabled={loadingOpts}
-          className="w-full h-14 rounded-2xl bg-[#5fd0c8] text-[#041014] font-bold text-base flex items-center justify-center gap-2 shadow-[0_4px_24px_rgba(95,208,200,0.4)] active:scale-[0.99] transition-all disabled:opacity-60"
-          type="button"
-        >
-          <span className="material-symbols-outlined text-[24px]">download</span>
-          <span>Descargar video ({selectedQuality.label})</span>
-        </button>
-      </div>
     </div>
   );
 }

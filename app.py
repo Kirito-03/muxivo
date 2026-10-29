@@ -663,19 +663,23 @@ ALLOWED_BASES = {
 
 
 def _resolve_allowed_relpath(relpath: str) -> Path:
-    rel = Path(relpath)
-    if rel.is_absolute() or not rel.parts:
-        abort(404)
-    base_name = rel.parts[0]
-    base_dir = ALLOWED_BASES.get(base_name)
-    if not base_dir:
-        abort(404)
-    full = (ROOT_DIR / rel).resolve()
-    if base_dir not in full.parents and full != base_dir:
-        abort(404)
-    if not full.is_file():
-        abort(404)
-    return full
+    import urllib.parse
+    unquoted = urllib.parse.unquote(relpath)
+    for candidate_rel in (unquoted, relpath):
+        try:
+            rel = Path(candidate_rel)
+            if rel.is_absolute() or not rel.parts:
+                continue
+            base_name = rel.parts[0]
+            base_dir = ALLOWED_BASES.get(base_name)
+            if not base_dir:
+                continue
+            full = (ROOT_DIR / rel).resolve()
+            if (base_dir in full.parents or full == base_dir) and full.is_file():
+                return full
+        except Exception:
+            continue
+    abort(404)
 
 
 app = Flask(
@@ -910,7 +914,9 @@ def icon_png():
 def files(relpath: str):
     p = _resolve_allowed_relpath(relpath)
     as_attachment = request.args.get("download") in ("1", "true", "yes")
-    return send_file(p, as_attachment=as_attachment, download_name=p.name)
+    custom_name = request.args.get("name")
+    download_name = _clean_filename(custom_name) if custom_name else p.name
+    return send_file(p, as_attachment=as_attachment, download_name=download_name)
 
 
 @app.get("/api/options")
@@ -1764,11 +1770,6 @@ def api_download():
                         pp = p.resolve()
                         item_kind = _file_kind_for_path(pp)
                         served = pp
-                        if item_kind == "video":
-                            try:
-                                served = _copy_for_preview(pp)
-                            except Exception:
-                                served = pp
                         clean_name = _clean_filename(pp.name)
                         files_out.append({
                             "name": clean_name,
@@ -1847,11 +1848,6 @@ def api_download():
         pp = p.resolve()
         item_kind = _file_kind_for_path(pp)
         served = pp
-        if item_kind == "video":
-            try:
-                served = _copy_for_preview(pp)
-            except Exception:
-                served = pp
         clean_name = _clean_filename(pp.name)
         files.append({"name": clean_name, "url": _rel_to_url(served), "kind": item_kind, "status": "done"})
         try:
@@ -1962,11 +1958,6 @@ def api_download():
                         pp = p.resolve()
                         item_kind = _file_kind_for_path(pp)
                         served = pp
-                        if item_kind == "video":
-                            try:
-                                served = _copy_for_preview(pp)
-                            except Exception:
-                                served = pp
                         clean_name = _clean_filename(pp.name)
                         files.append({"name": clean_name, "url": _rel_to_url(served), "kind": item_kind, "status": "done"})
                         try:

@@ -8,6 +8,22 @@ const KIND_ICONS = {
   file: 'description',
 };
 
+function getDownloadUrl(url, name) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url, window.location.origin);
+    parsed.searchParams.set('download', '1');
+    if (name) {
+      parsed.searchParams.set('name', name);
+    }
+    return parsed.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    const nameParam = name ? `&name=${encodeURIComponent(name)}` : '';
+    return `${url}${sep}download=1${nameParam}`;
+  }
+}
+
 function FileCard({ file }) {
   const [downloading, setDownloading] = useState(false);
   const icon = KIND_ICONS[file.kind] || 'description';
@@ -16,14 +32,14 @@ function FileCard({ file }) {
     setDownloading(true);
     try {
       const a = document.createElement('a');
-      a.href = file.url;
+      a.href = getDownloadUrl(file.url, file.name);
       a.download = file.name || 'archivo';
       a.style.display = 'none';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     } catch {
-      window.open(file.url, '_blank');
+      window.open(getDownloadUrl(file.url, file.name), '_blank');
     } finally {
       setTimeout(() => setDownloading(false), 1500);
     }
@@ -177,7 +193,7 @@ export default function CompletedView({ completedItem, onNewDownload }) {
       <div className="w-full flex flex-col gap-3">
         {files.length === 1 && !showZip ? (
           <a
-            href={files[0].url}
+            href={getDownloadUrl(files[0].url, files[0].name)}
             download={files[0].name}
             className="w-full h-14 rounded-2xl bg-[#5fd0c8] hover:bg-[#7FE0D8] active:bg-[#46B8B0] text-[#041014] text-base font-bold flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(95,208,200,0.35)] active:scale-[0.98] transition-all cursor-pointer"
           >

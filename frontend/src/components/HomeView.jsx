@@ -210,7 +210,7 @@ export default function HomeView({
 
                     {directFile && directFile.url ? (
                       <a
-                        href={directFile.url}
+                        href={`${directFile.url}${directFile.url.includes('?') ? '&' : '?'}download=1&name=${encodeURIComponent(directFile.name || itemTitle)}`}
                         download={directFile.name || itemTitle}
                         className="w-8 h-8 rounded-lg bg-[#252b2e] hover:bg-[#5fd0c8] hover:text-[#041014] text-[#dee3e7] flex items-center justify-center shrink-0 transition-colors"
                         title={`Descargar ${directFile.name || itemTitle}`}
