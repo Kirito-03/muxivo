@@ -1,0 +1,40 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# =============================================================================
+# ~/bin/termux-url-opener — Menú rápido al dar "Compartir -> Termux" en Android
+# =============================================================================
+set -u
+
+SHARED_TEXT="${1:-}"
+REPO_DIR="${MUVIXO_REPO_DIR:-$HOME/muxivo}"
+if [ ! -d "$REPO_DIR" ] && [ -d "$HOME/muvixo" ]; then
+    REPO_DIR="$HOME/muvixo"
+fi
+
+clear
+echo "=============================================="
+echo "          ✨ MUVIXO — SHARE TO TERMUX         "
+echo "=============================================="
+echo "Enlace recibido:"
+echo "  $SHARED_TEXT"
+echo ""
+echo "¿Qué deseas descargar en tu Galería (/sdcard/Download/Muvixo)?"
+echo "  [1] 🎬/📸 Video o Fotos/Carrusel (Automático - Por defecto en 3s)"
+echo "  [2] 🎵 Solo Audio (MP3 máxima calidad)"
+echo ""
+read -r -t 3 -p "Selecciona [1/2] (Enter = 1): " CHOICE || CHOICE="1"
+echo ""
+
+MODE_FLAG=""
+if [ "${CHOICE:-1}" = "2" ]; then
+    MODE_FLAG="--audio"
+fi
+
+python "$REPO_DIR/termux/share_download.py" $MODE_FLAG "$SHARED_TEXT"
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+    echo ""
+    read -r -t 8 -p "Presiona Enter para cerrar..." _ || true
+else
+    sleep 1
+fi

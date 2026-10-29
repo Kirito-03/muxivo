@@ -54,22 +54,60 @@ WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 # Ejemplo: WORKER_MODE=vibe python worker.py
 WORKER_MODE = os.getenv("WORKER_MODE", "").strip().lower()
 
-# Cookies para YouTube (evita detección de bots)
-# Opción A: ruta a un archivo cookies.txt exportado desde el navegador
+# Cookies para YouTube/Instagram/TikTok (evita detección de bots y permite posts con login)
+# Opción A: ruta a un archivo cookies.txt exportado desde el navegador (o ~/cookies.txt en Termux)
 # Opción B: nombre del navegador para usar --cookies-from-browser (ej: "chrome", "firefox")
 WORKER_COOKIES_FILE = os.getenv("WORKER_COOKIES_FILE", "").strip()
 WORKER_COOKIES_FROM_BROWSER = os.getenv("WORKER_COOKIES_FROM_BROWSER", "").strip()
 
 
+def _resolve_cookies_path() -> Optional[Path]:
+    """Busca cookies.txt en WORKER_COOKIES_FILE o ubicaciones estándar de Termux/proyecto."""
+    candidates: List[Path] = []
+    if WORKER_COOKIES_FILE:
+        candidates.append(Path(WORKER_COOKIES_FILE).expanduser())
+    candidates.extend([
+        Path.home() / "cookies.txt",
+        Path("cookies.txt"),
+        Path("data/cookies.txt"),
+        Path("www.instagram.com_cookies.txt"),
+        Path("cookies/instagram.txt"),
+        Path("www.youtube.com_cookies.txt"),
+        Path("cookies/youtube.txt"),
+        Path("www.tiktok.com_cookies.txt"),
+        Path("cookies/tiktok.txt"),
+    ])
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file() and p.stat().st_size > 10:
+                return p.resolve()
+        except Exception:
+            continue
+    return None
+
+
 def _cookies_args() -> List[str]:
     """Devuelve los argumentos de cookies para yt-dlp, si están configurados."""
-    if WORKER_COOKIES_FILE:
-        p = Path(WORKER_COOKIES_FILE).expanduser()
-        if p.exists() and p.is_file():
-            return ["--cookies", str(p)]
+    cp = _resolve_cookies_path()
+    if cp:
+        return ["--cookies", str(cp)]
     if WORKER_COOKIES_FROM_BROWSER:
         return ["--cookies-from-browser", WORKER_COOKIES_FROM_BROWSER]
     return []
+
+
+def _load_cookie_jar():
+    """Carga MozillaCookieJar desde cookies.txt para peticiones requests (Instagram/TikTok/Pinterest)."""
+    cp = _resolve_cookies_path()
+    if not cp:
+        return None
+    try:
+        import http.cookiejar
+        jar = http.cookiejar.MozillaCookieJar(str(cp))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        return jar
+    except Exception:
+        return None
 
 
 DOWNLOADS_DIR = Path(os.getenv("WORKER_DOWNLOADS_DIR", "worker_downloads")).resolve()
@@ -135,7 +173,8 @@ _KNOWN_PLATFORMS = (
     "vimeo.com",
     "reddit.com", "v.redd.it",
     "bilibili.com",
-    "pinterest.com",
+    "pinterest.com", "pin.it",
+    "threads.net", "threads.com",
 )
 
 # Modo de URL: True = aceptar CUALQUIER URL pública (recomendado para uso personal)
@@ -294,10 +333,12 @@ def detect_platform(raw: str) -> str:
         return "bilibili"
     if "facebook" in host or host == "fb.watch":
         return "facebook"
-    if "dailymotion" in host:
+    if "dailymotion" in host or host == "dai.ly":
         return "dailymotion"
-    if "pinterest" in host:
+    if "pinterest" in host or host == "pin.it":
         return "pinterest"
+    if "threads.net" in host or "threads.com" in host:
+        return "threads"
     return "other"  # yt-dlp intentará descargarlo de todos modos
 
 
@@ -803,11 +844,14 @@ def _extract_og_image(html: str) -> List[str]:
     return results
 
 
-def _fetch_html(url: str, *, mobile: bool = True) -> Tuple[str, str]:
-    """Descarga HTML de una URL. Devuelve (html, final_url)."""
+def _fetch_html(url: str, *, mobile: bool = True, referer: Optional[str] = None) -> Tuple[str, str]:
+    """Descarga HTML de una URL (usando cookies si están disponibles). Devuelve (html, final_url)."""
     hdrs = dict(_HEADERS_MOBILE if mobile else _HEADERS_DESKTOP)
+    if referer:
+        hdrs["Referer"] = referer
     try:
-        resp = requests.get(url, headers=hdrs, timeout=18, allow_redirects=True)
+        jar = _load_cookie_jar()
+        resp = requests.get(url, headers=hdrs, cookies=jar, timeout=18, allow_redirects=True)
         resp.raise_for_status()
         return resp.text, resp.url
     except Exception as exc:
@@ -953,44 +997,210 @@ def extract_gallery(input_url: str, max_items: int = 48) -> List[Dict[str, str]]
 
 
 def _extract_instagram_gallery(url: str) -> List[str]:
-    """Extracción básica de imágenes Instagram vía yt-dlp (con cookies si están disponibles)."""
+    """
+    Extracción completa de fotos y carruseles de Instagram en el Worker (Termux):
+      1. Endpoint público/embed (/p/<shortcode>/embed/captioned/) con cookies e IP móvil.
+      2. Scraping de la página del post con cookies (soporta posts privados/restringidos de cuentas seguidas).
+      3. Fallback yt-dlp --dump-json.
+    """
+    m = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)", url)
+    shortcode = m.group(1) if m else None
+    jar = _load_cookie_jar()
+    results: List[str] = []
+
+    def _is_clean_ig_img(u: str) -> bool:
+        if not u or not u.startswith("http"):
+            return False
+        low = u.lower()
+        if any(p in low for p in _IMG_REJECT_PATTERNS):
+            return False
+        if any(bad in low for bad in ("/s150x150/", "/s320x320/", "profile_pic", "/rsrc.php", "static.cdninstagram.com")):
+            return False
+        return ("cdninstagram.com" in low) or ("fbcdn.net" in low)
+
+    # 1. Estrategia Embed (/embed/captioned/)
+    if shortcode:
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        try:
+            hdrs = {
+                "User-Agent": _UA_DESKTOP,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.instagram.com/",
+            }
+            resp = requests.get(embed_url, headers=hdrs, cookies=jar, timeout=15)
+            html = resp.text or ""
+            if html:
+                # 1a. Buscar contextJSON con carrusel completo (edge_sidecar_to_children)
+                ctx_m = re.search(r'"contextJSON"\s*:\s*"((?:\\.|[^"\\])*)"', html)
+                if ctx_m:
+                    try:
+                        ctx_raw = json.loads(f'"{ctx_m.group(1)}"')
+                        ctx_data = json.loads(ctx_raw)
+                        media = (ctx_data.get("gql_data") or {}).get("shortcode_media") or ctx_data.get("shortcode_media") or {}
+                        edges = ((media.get("edge_sidecar_to_children") or {}).get("edges")) or []
+                        for edge in edges:
+                            node = (edge or {}).get("node") or {}
+                            disp = _clean_image_url(str(node.get("display_url") or ""))
+                            if not disp:
+                                res_list = node.get("display_resources") or []
+                                if res_list and isinstance(res_list[-1], dict):
+                                    disp = _clean_image_url(str(res_list[-1].get("src") or ""))
+                            if _is_clean_ig_img(disp):
+                                results.append(disp)
+                        if not results:
+                            disp = _clean_image_url(str(media.get("display_url") or ""))
+                            if _is_clean_ig_img(disp):
+                                results.append(disp)
+                    except Exception as exc:
+                        print(f"[WORKER/extract] ig embed contextJSON parse error: {exc}", flush=True)
+
+                # 1b. Buscar EmbeddedMediaImage en el HTML del embed
+                if not results:
+                    for em in re.finditer(r'<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"', html):
+                        u = _clean_image_url(em.group(1))
+                        if _is_clean_ig_img(u):
+                            results.append(u)
+                    for em in re.finditer(r'<img[^>]+src="([^"]+)"[^>]+class="[^"]*EmbeddedMediaImage[^"]*"', html):
+                        u = _clean_image_url(em.group(1))
+                        if _is_clean_ig_img(u):
+                            results.append(u)
+        except Exception as exc:
+            print(f"[WORKER/extract] ig embed request failed: {exc}", flush=True)
+
+    if results:
+        deduped = _dedup_images(results)
+        print(f"[WORKER/extract] instagram embed found={len(deduped)}", flush=True)
+        return deduped
+
+    # 2. Estrategia Direct Post Page con cookies (para posts con login/edad/privados)
+    if shortcode:
+        post_url = f"https://www.instagram.com/p/{shortcode}/"
+        try:
+            hdrs = {
+                "User-Agent": _UA_DESKTOP,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.instagram.com/",
+                "Sec-Fetch-Mode": "navigate",
+            }
+            resp = requests.get(post_url, headers=hdrs, cookies=jar, timeout=15)
+            html = resp.text or ""
+            if html:
+                # Extraer display_url del JSON embebido de Polaris / Relay
+                for dm in re.finditer(r'"display_url"\s*:\s*"([^"]+)"', html):
+                    u = _clean_image_url(dm.group(1))
+                    if _is_clean_ig_img(u):
+                        results.append(u)
+                # Si no hay display_url, buscar image_versions2 candidates (primer candidato de cada bloque es el de mayor resolución)
+                if not results:
+                    for block in re.finditer(r'"image_versions2"\s*:\s*\{\s*"candidates"\s*:\s*\[(\{[^\]]+\})\]', html):
+                        first_u = re.search(r'"url"\s*:\s*"([^"]+)"', block.group(1))
+                        if first_u:
+                            u = _clean_image_url(first_u.group(1))
+                            if _is_clean_ig_img(u):
+                                results.append(u)
+                # Fallback a og:image si estamos logueados y es 1 sola imagen
+                if not results and '"LoginAndSignupPage"' not in html:
+                    for og_u in _extract_og_image(html):
+                        if _is_clean_ig_img(og_u):
+                            results.append(og_u)
+        except Exception as exc:
+            print(f"[WORKER/extract] ig direct page failed: {exc}", flush=True)
+
+    if results:
+        deduped = _dedup_images(results)
+        print(f"[WORKER/extract] instagram page found={len(deduped)}", flush=True)
+        return deduped
+
+    # 3. Fallback: yt-dlp --dump-json (con cookies si están disponibles)
     try:
         cmd = [
             sys.executable, "-m", "yt_dlp",
             "--no-playlist", "--no-warnings", "--quiet",
             "--dump-json", url,
-        ] + _cookies_args()  # Fix #7: incluir cookies para posts privados/semiprivados
+        ] + _cookies_args()
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        if proc.returncode != 0:
-            return []
-        for line in (proc.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except Exception:
-                continue
-            # Buscar thumbnails / webpage_url
-            thumbnails = data.get("thumbnails") or []
-            if thumbnails:
-                urls = [t.get("url") for t in thumbnails if t.get("url")]
-                if urls:
-                    filtered = []
-                    for u in urls:
-                        if not u.startswith("http"):
-                            continue
-                        low = u.lower()
-                        if any(p in low for p in _IMG_REJECT_PATTERNS):
-                            continue
-                        filtered.append(u)
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    continue
+                thumbnails = data.get("thumbnails") or []
+                if thumbnails:
+                    urls = [t.get("url") for t in thumbnails if t.get("url")]
+                    filtered = [u for u in urls if _is_clean_ig_img(u)]
                     if filtered:
-                        return filtered
-            thumb = data.get("thumbnail")
-            if thumb and not any(p in thumb.lower() for p in _IMG_REJECT_PATTERNS):
-                return [thumb]
+                        results.extend(filtered)
+                thumb = data.get("thumbnail")
+                if thumb and _is_clean_ig_img(thumb):
+                    results.append(thumb)
     except Exception as exc:
         print(f"[WORKER/extract] instagram ytdlp failed: {exc}", flush=True)
+
+    return _dedup_images(results)
+
+
+def _normalize_pinterest_url(url: str) -> str:
+    """Resuelve pin.it y normaliza dominios regionales de Pinterest a www.pinterest.com/pin/<id>/."""
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        if host == "pin.it" or host.endswith(".pin.it"):
+            r = requests.get(url, headers={"User-Agent": _UA_DESKTOP}, allow_redirects=True, timeout=12)
+            url = r.url or url
+            p = urlparse(url)
+            host = (p.hostname or "").lower()
+        if "pinterest." in host:
+            m = re.search(r"/pin/(?:[^/]+--)?(\d+)", p.path or "")
+            if m:
+                return f"https://www.pinterest.com/pin/{m.group(1)}/"
+    except Exception as exc:
+        print(f"[WORKER/extract] pinterest normalize failed: {exc}", flush=True)
+    return url
+
+
+def _extract_pinterest_gallery(url: str) -> List[str]:
+    """Extrae imágenes en máxima calidad (originals) de un Pin de Pinterest."""
+    norm_url = _normalize_pinterest_url(url)
+    html, _ = _fetch_html(norm_url, mobile=False, referer="https://www.pinterest.com/")
+    if not html:
+        return []
+    results: List[str] = []
+    # Buscar URLs originals en i.pinimg.com
+    for m in re.finditer(r'https://i\.pinimg\.com/originals/[A-Za-z0-9/_.-]+\.(?:jpg|jpeg|png|webp)', html):
+        results.append(_clean_image_url(m.group(0)))
+    if not results:
+        for m in re.finditer(r'https://i\.pinimg\.com/736x/[A-Za-z0-9/_.-]+\.(?:jpg|jpeg|png|webp)', html):
+            results.append(_clean_image_url(m.group(0)))
+    if not results:
+        results.extend(_extract_og_image(html))
+    return _dedup_images(results)
+
+
+def _extract_twitter_gallery(url: str) -> List[str]:
+    """Extrae fotos de un post de X/Twitter usando api.fxtwitter.com."""
+    m = re.search(r"(?:twitter\.com|x\.com)/([^/]+)/status/(\d+)", url)
+    if not m:
+        return []
+    user, status_id = m.group(1), m.group(2)
+    api_url = f"https://api.fxtwitter.com/{user}/status/{status_id}"
+    try:
+        r = requests.get(api_url, headers={"User-Agent": _UA_DESKTOP}, timeout=12)
+        if r.status_code == 200:
+            data = r.json()
+            tweet = data.get("tweet") or {}
+            media = tweet.get("media") or {}
+            photos = media.get("photos") or []
+            urls = [str(p.get("url") or "").strip() for p in photos if isinstance(p, dict) and p.get("url")]
+            if urls:
+                return _dedup_images(urls)
+    except Exception as exc:
+        print(f"[WORKER/extract] twitter gallery failed: {exc}", flush=True)
     return []
 
 
@@ -1002,6 +1212,14 @@ def _extract_image_urls(raw_url: str) -> List[str]:
         return [it["url"] for it in items]
     if platform == "instagram":
         urls = _extract_instagram_gallery(raw_url)
+        if urls:
+            return urls
+    if platform == "pinterest":
+        urls = _extract_pinterest_gallery(raw_url)
+        if urls:
+            return urls
+    if platform == "twitter":
+        urls = _extract_twitter_gallery(raw_url)
         if urls:
             return urls
     # Fallback: og:image
@@ -1184,6 +1402,18 @@ def _cdn_headers_for(url: str) -> Dict[str, str]:
             "Referer": "https://www.instagram.com/",
             "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
         }
+    if "pinimg.com" in low or "pinterest." in low:
+        return {
+            "User-Agent": _UA_DESKTOP,
+            "Referer": "https://www.pinterest.com/",
+            "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+        }
+    if "twimg.com" in low or "twitter.com" in low or "x.com" in low:
+        return {
+            "User-Agent": _UA_DESKTOP,
+            "Referer": "https://x.com/",
+            "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+        }
     return {"User-Agent": _UA_MOBILE}
 
 
@@ -1316,6 +1546,7 @@ def health_check():
         size_mb = round(size / (1024 * 1024), 2)
     except Exception:
         count, size_mb = 0, 0
+    cookies_path = _resolve_cookies_path()
     return jsonify({
         "ok": True,
         "service": "universal-media-worker",
@@ -1323,6 +1554,8 @@ def health_check():
         "yt_dlp": ytdlp_ok,
         "yt_dlp_version": ytdlp_version,
         "ffmpeg": ffmpeg_ok,
+        "cookies_loaded": cookies_path is not None,
+        "cookies_file": str(cookies_path) if cookies_path else None,
         "downloads_count": count,
         "downloads_size_mb": size_mb,
         "capabilities": {
@@ -1334,7 +1567,9 @@ def health_check():
             "youtube": True,
             "tiktok": True,
             "instagram": True,
-            "facebook": False,  # pendiente
+            "pinterest": True,
+            "twitter": True,
+            "facebook": True,
         },
     })
 
@@ -1488,6 +1723,18 @@ def extract_media():
             items = extract_gallery(raw_url)
         elif platform == "instagram":
             img_urls = _extract_instagram_gallery(raw_url)
+            items = [
+                {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
+                for i, u in enumerate(img_urls)
+            ]
+        elif platform == "pinterest":
+            img_urls = _extract_pinterest_gallery(raw_url)
+            items = [
+                {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
+                for i, u in enumerate(img_urls)
+            ]
+        elif platform == "twitter":
+            img_urls = _extract_twitter_gallery(raw_url)
             items = [
                 {"url": u, "thumb": u, "label": f"IMAGE {i+1}", "kind": "image"}
                 for i, u in enumerate(img_urls)
@@ -1646,11 +1893,15 @@ def download_media():
 
         if is_direct_image_url(raw_url):
             img_urls_to_dl = [raw_url]
+        elif isinstance(data.get("image_urls"), list) and data.get("image_urls"):
+            img_urls_to_dl = [str(u).strip() for u in data["image_urls"] if str(u).strip().startswith("http")]
         else:
             img_urls_to_dl = _extract_image_urls(raw_url)
 
         for i, u in enumerate(img_urls_to_dl[:35]):  # Fix #3: TikTok Photo puede tener hasta 35 slides
-            ext = Path(urlparse(u).path).suffix.lstrip(".").lower() or "jpg"
+            ext = Path(urlparse(u).path).suffix.lstrip(".").lower()
+            if ext not in _IMAGE_EXTS:
+                ext = "jpg"
             base = sanitize_filename(f"{_sha1(u)[:10]}_{i+1}.{ext}", f"img_{i+1}.{ext}")
             dest = (DOWNLOADS_DIR / base).resolve()
             stored = _download_binary(u, dest)
@@ -1676,7 +1927,10 @@ def download_media():
         return _handle_spotify_download(raw_url, kind, fmt, quality)
 
     # --- Audio / Video: yt-dlp ---
-    yt_url = normalize_youtube_url(raw_url) or raw_url
+    if platform == "pinterest":
+        yt_url = _normalize_pinterest_url(raw_url)
+    else:
+        yt_url = normalize_youtube_url(raw_url) or raw_url
     key = _cache_key_for(yt_url, kind, fmt, quality)
 
     # Verificar cache
