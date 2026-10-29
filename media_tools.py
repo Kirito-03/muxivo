@@ -2952,7 +2952,11 @@ def _instagram_post_fast_embed(url: str, timeout: int = 6, cookies_path: Optiona
 
         # 0. Try Instagram internal API v1 (/api/v1/media/<media_id>/info/) if cookies are available
         try:
-            ig_cpath = cookies_path or get_cookiefile_for_platform("instagram")
+            ig_cpath = None
+            if cookies_path and validate_cookiefile("instagram", cookies_path).get("valid"):
+                ig_cpath = cookies_path
+            if not ig_cpath:
+                ig_cpath = get_cookiefile_for_platform("instagram")
             if ig_cpath and ig_cpath.exists() and ig_cpath.stat().st_size > 10:
                 jar = http.cookiejar.MozillaCookieJar(str(ig_cpath))
                 jar.load(ignore_discard=True, ignore_expires=True)

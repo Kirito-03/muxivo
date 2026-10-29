@@ -127,6 +127,9 @@ def _cookies_path() -> Optional[Path]:
         (
             p
             for p in [
+                Path("/app/cookies/instagram/current.txt").resolve(),
+                (ROOT_DIR / "cookies" / "instagram" / "current.txt").resolve(),
+                (ROOT_DIR / "cookies" / "instagram.txt").resolve(),
                 (ROOT_DIR / "cookies_instagram.txt").resolve(),
                 (ROOT_DIR / "www.instagram.com_cookies.txt").resolve(),
                 (ROOT_DIR / "instagram_cookies.txt").resolve(),
