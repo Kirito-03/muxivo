@@ -9,12 +9,19 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// Registrar Service Worker para soporte PWA e instalación en dispositivos
+// Limpiar caché antigua que ignoraba query strings en /api/thumb y actualizar Service Worker
+if ('caches' in window) {
+  caches.delete('muxivo-pwa-v1').catch(() => {});
+}
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch((err) => {
-      console.warn('Service worker registration failed:', err);
-    });
+    navigator.serviceWorker
+      .register('/service-worker.js')
+      .then((reg) => {
+        reg.update().catch(() => {});
+      })
+      .catch((err) => {
+        console.warn('Service worker registration failed:', err);
+      });
   });
 }
-

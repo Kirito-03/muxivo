@@ -1,7 +1,9 @@
+const CACHE_NAME = "muvixo-pwa-v3"
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
-      const cache = await caches.open("muxivo-pwa-v1")
+      const cache = await caches.open(CACHE_NAME)
       await cache.addAll([
         "/",
         "/manifest.webmanifest",
@@ -18,7 +20,7 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      const keep = new Set(["muxivo-pwa-v1"])
+      const keep = new Set([CACHE_NAME])
       const keys = await caches.keys()
       await Promise.all(keys.filter((k) => !keep.has(k)).map((k) => caches.delete(k)))
       await self.clients.claim()
@@ -27,8 +29,8 @@ self.addEventListener("activate", (event) => {
 })
 
 async function cachedOrFetch(request) {
-  const cache = await caches.open("muxivo-pwa-v1")
-  const cached = await cache.match(request, { ignoreSearch: true })
+  const cache = await caches.open(CACHE_NAME)
+  const cached = await cache.match(request)
   const fetchPromise = fetch(request)
     .then((resp) => {
       if (resp && resp.ok) cache.put(request, resp.clone()).catch(() => {})
@@ -45,7 +47,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url)
   if (url.origin !== self.location.origin) return
 
-  if (url.pathname.startsWith("/files/")) return
+  // Nunca cachear endpoints de API ni descargas/previsualizaciones dinámicas
+  if (url.pathname.startsWith("/files/") || url.pathname.startsWith("/api/")) return
 
   const accept = req.headers.get("accept") || ""
   const isHtml = req.mode === "navigate" || accept.includes("text/html")
@@ -55,7 +58,7 @@ self.addEventListener("fetch", (event) => {
         try {
           const resp = await fetch(req)
           if (resp && resp.ok) {
-            const cache = await caches.open("muxivo-pwa-v1")
+            const cache = await caches.open(CACHE_NAME)
             cache.put("/", resp.clone()).catch(() => {})
           }
           return resp
@@ -71,10 +74,10 @@ self.addEventListener("fetch", (event) => {
   const isAsset =
     req.destination === "style" ||
     req.destination === "script" ||
-    req.destination === "image" ||
     req.destination === "font" ||
     url.pathname === "/manifest.webmanifest" ||
-    url.pathname.startsWith("/static/")
+    url.pathname.startsWith("/static/") ||
+    url.pathname.startsWith("/assets/")
 
   if (isAsset) {
     event.respondWith(cachedOrFetch(req))

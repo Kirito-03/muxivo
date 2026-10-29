@@ -21,8 +21,10 @@ export default function ImageDetectionView({
 
   const toPreviewUrl = (u) => {
     if (!u) return '';
+    if (u.startsWith('/files/thumb')) return u;
+    if (u.startsWith('/api/thumb')) return u.replace('/api/thumb', '/files/thumb');
     if (u.startsWith('/')) return u;
-    return `/api/thumb?url=${encodeURIComponent(u)}`;
+    return `/files/thumb?url=${encodeURIComponent(u)}`;
   };
 
   const handlePrev = () => {

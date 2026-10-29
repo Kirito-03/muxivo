@@ -810,7 +810,14 @@ def index():
     # Serve React frontend
     react_index = (ROOT_DIR / "frontend" / "dist" / "index.html").resolve()
     if react_index.exists():
-        return send_file(str(react_index))
+        resp = send_file(str(react_index), max_age=0)
+        try:
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+        except Exception:
+            pass
+        return resp
     abort(500, description="Frontend build not found in frontend/dist. Run 'pnpm run build' inside frontend/")
 
 
@@ -915,6 +922,8 @@ def icon_png():
 
 @app.get("/files/<path:relpath>")
 def files(relpath: str):
+    if relpath == "thumb":
+        return api_thumb()
     p = _resolve_allowed_relpath(relpath)
     as_attachment = request.args.get("download") in ("1", "true", "yes")
     custom_name = request.args.get("name")
@@ -1150,7 +1159,7 @@ def api_detect():
                     th_host.endswith(("tiktokcdn.com", "tiktokcdn-us.com", "muscdn.com", "cdninstagram.com", "fbcdn.net"))
                     or ".tiktokcdn" in th_host
                 ):
-                    safe_thumb = f"/api/thumb?url={_uq(safe_thumb, safe='')}"
+                    safe_thumb = f"/files/thumb?url={_uq(safe_thumb, safe='')}"
             except Exception:
                 pass
 
@@ -1463,6 +1472,7 @@ def api_detect():
 
 
 @app.get("/api/thumb")
+@app.get("/files/thumb")
 def api_thumb():
     u = (request.args.get("url", "") or "").strip()
     ref = (request.args.get("ref", "") or "").strip() or None

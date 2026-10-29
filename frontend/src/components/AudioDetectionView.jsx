@@ -62,7 +62,9 @@ export default function AudioDetectionView({
 
   const rawThumbnail = mediaData?.thumbnail || null;
   const currentThumbnail = rawThumbnail
-    ? (rawThumbnail.startsWith('/') ? rawThumbnail : `/api/thumb?url=${encodeURIComponent(rawThumbnail)}`)
+    ? (rawThumbnail.startsWith('/api/thumb')
+        ? rawThumbnail.replace('/api/thumb', '/files/thumb')
+        : (rawThumbnail.startsWith('/') ? rawThumbnail : `/files/thumb?url=${encodeURIComponent(rawThumbnail)}`))
     : null;
 
   const handleCopy = () => {
