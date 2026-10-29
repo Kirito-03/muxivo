@@ -2940,7 +2940,7 @@ def _tiktok_photo_candidates_playwright(
 _IG_PROBE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
-def _instagram_post_fast_embed(url: str, timeout: int = 6) -> Dict[str, Any]:
+def _instagram_post_fast_embed(url: str, timeout: int = 6, cookies_path: Optional[Path] = None) -> Dict[str, Any]:
     out: Dict[str, Any] = {"media_type": "unknown", "images": [], "video_url": None, "title": None, "uploader": None}
     sc = _instagram_shortcode(url)
     if not sc:
@@ -2952,7 +2952,7 @@ def _instagram_post_fast_embed(url: str, timeout: int = 6) -> Dict[str, Any]:
 
         # 0. Try Instagram internal API v1 (/api/v1/media/<media_id>/info/) if cookies are available
         try:
-            ig_cpath = get_cookiefile_for_platform("instagram")
+            ig_cpath = cookies_path or get_cookiefile_for_platform("instagram")
             if ig_cpath and ig_cpath.exists() and ig_cpath.stat().st_size > 10:
                 jar = http.cookiejar.MozillaCookieJar(str(ig_cpath))
                 jar.load(ignore_discard=True, ignore_expires=True)
