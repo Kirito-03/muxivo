@@ -12,6 +12,10 @@ export default function ErrorView({ errorData, onRetry, onPasteAnother, onClear 
   const handleRetry = () => {
     setRetrying(true);
     triggerToast('Reconectando al servidor...');
+    if (typeof onRetry === 'function') {
+      onRetry();
+      return;
+    }
     setTimeout(() => {
       setRetrying(false);
       triggerToast('Enlace aún no disponible. Prueba con otro enlace público.');

@@ -1142,6 +1142,34 @@ def _norm_instagram(u: str) -> str:
         return urlunparse(p)
     return u
 
+
+def _norm_pinterest(u: str) -> str:
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        path = p.path or ""
+        if host == "pin.it" or ("pinterest." in host and "/pin/" not in path):
+            import requests
+            r = requests.get(
+                u,
+                headers={"User-Agent": _DEFAULT_UA},
+                allow_redirects=True,
+                timeout=8,
+            )
+            if r.url and r.url != u:
+                u = str(r.url)
+                p = urlparse(u)
+                host = (p.netloc or "").lower()
+                path = p.path or ""
+        if "pinterest." in host:
+            m = re.search(r"/pin/(?:[\w-]+--)?(\d+)", path)
+            if m:
+                return f"https://www.pinterest.com/pin/{m.group(1)}/"
+    except Exception:
+        pass
+    return u
+
+
 def _normalize_url(u: str) -> str:
     if not u:
         return u
@@ -1155,6 +1183,8 @@ def _normalize_url(u: str) -> str:
         return _norm_tiktok(u)
     if "instagram.com" in host:
         return _norm_instagram(u)
+    if "pinterest." in host or host == "pin.it":
+        return _norm_pinterest(u)
     if host.startswith("m."):
         p = urlparse(u)
         p = p._replace(netloc=host[2:])
@@ -1278,26 +1308,37 @@ def _collect_image_candidates(info: Any) -> List[Dict[str, str]]:
         if entries:
             for entry in entries:
                 walk(entry, title)
+            return
 
         formats = node.get("formats") or []
         image_idx = len(candidates) + 1
+
+        # Pick only the single highest-resolution image format per leaf node
+        img_formats = []
         for fmt in formats:
             fmt_url = fmt.get("url")
-            fmt_ext = (fmt.get("ext") or "").lower()
+            fmt_ext = (fmt.get("ext") or _guess_ext_from_url(fmt_url, "")).lower()
             vcodec = fmt.get("vcodec")
             if fmt_url and fmt_ext in IMAGE_EXTS and vcodec in (None, "none"):
-                add_candidate(fmt_url, title, image_idx, fmt_ext)
-                image_idx += 1
+                area = int(fmt.get("width") or 0) * int(fmt.get("height") or 0)
+                pref = int(fmt.get("preference") or fmt.get("quality") or 0)
+                img_formats.append((area, pref, fmt_url, fmt_ext))
+
+        if img_formats:
+            img_formats.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            _, _, best_furl, best_fext = img_formats[0]
+            add_candidate(best_furl, title, image_idx, best_fext)
+            return
 
         direct_url = node.get("url")
         direct_ext = (node.get("ext") or "").lower()
         if direct_url and (direct_ext in IMAGE_EXTS or _guess_ext_from_url(direct_url, "") in IMAGE_EXTS):
             add_candidate(direct_url, title, image_idx, direct_ext or None)
-            image_idx += 1
+            return
 
         # Fallback para posts de foto donde el extractor solo expone thumbnails.
         has_video = direct_ext in VIDEO_EXTS or any((fmt.get("vcodec") not in (None, "none")) for fmt in formats)
-        if not has_video and not entries:
+        if not has_video:
             thumbs = [t for t in (node.get("thumbnails") or []) if t.get("url")]
             thumbs = [
                 t for t in thumbs
@@ -1691,45 +1732,80 @@ def download_images_with_ytdlp(
                                 time.sleep(float(sleep_between))
                             continue
 
-                try:
-                    info = ydl.extract_info(url, download=False)
-                except DownloadError as e:
-                    if _is_auth_error(str(e)):
-                        if cookiefile and not ydl.params.get("cookiefile"):
+                candidates: List[Dict[str, str]] = []
+                info: Optional[Dict[str, Any]] = None
+                sniff_meta: Dict[str, Any] = {}
+
+                if selected_image_urls:
+                    for su_raw in selected_image_urls:
+                        su = str(su_raw or "").strip()
+                        if su.startswith(("http://", "https://")) and _is_safe_public_url(su):
+                            ext = _guess_ext_from_url(su, "jpg").lower()
+                            if ext not in IMAGE_EXTS:
+                                ext = "jpg"
+                            candidates.append({"url": su, "ext": ext})
+
+                if not candidates:
+                    try:
+                        sniff_meta = sniff_media_from_webpage(url, timeout=14, cookies_path=cookies_path, use_playwright=False)
+                        for iu in (sniff_meta.get("image_urls") or []):
+                            su = str(iu or "").strip()
+                            if su.startswith(("http://", "https://")) and _is_safe_public_url(su):
+                                ext = _guess_ext_from_url(su, "jpg").lower()
+                                if ext not in IMAGE_EXTS:
+                                    ext = "jpg"
+                                candidates.append({"url": su, "ext": ext})
+                    except Exception:
+                        sniff_meta = {}
+
+                if not candidates:
+                    try:
+                        info = ydl.extract_info(url, download=False)
+                    except DownloadError as e:
+                        if _is_auth_error(str(e)) and cookiefile and not ydl.params.get("cookiefile"):
                             ydl.params["cookiefile"] = cookiefile
                             info = ydl.extract_info(url, download=False)
                         else:
-                            try:
-                                host2 = (urlparse(url).netloc or "").lower()
-                            except Exception:
-                                host2 = ""
-                            if "instagram.com" in host2:
-                                if not cookiefile:
-                                    fails.append((url, "Instagram requiere autenticación adicional y no se encontraron cookies válidas."))
-                                else:
-                                    fails.append((url, "No se pudo acceder al contenido incluso usando cookies."))
-                                continue
-                            raise
-                    else:
-                        raise
-                candidates = _collect_image_candidates(info)
-                if selected_image_urls is not None:
+                            info = None
+                    if isinstance(info, dict):
+                        candidates = _collect_image_candidates(info)
+
+                if not candidates and sniff_meta.get("thumbnail"):
+                    su = str(sniff_meta["thumbnail"]).strip()
+                    if su.startswith(("http://", "https://")) and _is_safe_public_url(su):
+                        ext = _guess_ext_from_url(su, "jpg").lower()
+                        if ext not in IMAGE_EXTS:
+                            ext = "jpg"
+                        candidates.append({"url": su, "ext": ext})
+
+                if selected_image_urls is not None and candidates:
                     sel = {str(u).strip() for u in (selected_image_urls or []) if str(u).strip()}
                     sel_keys = {_url_key_for_selection(u) for u in sel if u}
-                    candidates = [
+                    filtered_c = [
                         c
                         for c in candidates
                         if (str(c.get("url") or "").strip() in sel)
                         or (_url_key_for_selection(str(c.get("url") or "").strip()) in sel_keys)
                     ]
+                    if filtered_c:
+                        candidates = filtered_c
+
                 if not candidates:
                     fails.append((url, "La plataforma no expuso imágenes descargables para este enlace."))
                     continue
 
-                uploader = _slugify(str(info.get("uploader") or info.get("channel") or "media"), maxlen=50)
+                raw_uploader = (
+                    (info or {}).get("uploader")
+                    or (info or {}).get("channel")
+                    or sniff_meta.get("uploader")
+                    or _detect_platform_id(url)
+                    or "media"
+                )
+                raw_title = (info or {}).get("title") or sniff_meta.get("title") or "imagen"
+                uploader = _slugify(str(raw_uploader), maxlen=50)
                 target_dir = out_dir / uploader if per_channel_folders else out_dir
                 target_dir.mkdir(parents=True, exist_ok=True)
-                title_base = _slugify(str(info.get("title") or "imagen"), maxlen=80)
+                title_base = _slugify(str(raw_title), maxlen=80)
 
                 for idx, item in enumerate(candidates, start=1):
                     ext = item["ext"]
@@ -1748,6 +1824,7 @@ def download_images_with_ytdlp(
                         shutil.copyfileobj(resp, fh)
                     generated.append(dest.resolve())
                     time.sleep(float(sleep_between))
+                continue
             except Exception as e:
                 msg = str(e or "")
                 low = msg.lower()
@@ -2733,7 +2810,11 @@ def _tiktok_photo_candidates_playwright(
                 f"Post-carga: photomode={len(photomode)} other={len(other)} seen={len(seen_keys)} "
                 f"net_hits={stats.get('net')} blob_hits={stats.get('blob')} json_hits={stats.get('json')}"
             )
-            _scan_scripts_for_urls("post-blobs")
+            if photomode and int(stats.get("json") or 0) > 0:
+                _dbg("JSON/UNIVERSAL_DATA ya entregó las imágenes exactas del post -> omitiendo scroll/carrusel DOM.")
+                max_steps = 0
+            else:
+                _scan_scripts_for_urls("post-blobs")
 
             fast_fail = (
                 len(seen_keys) == 0
@@ -2848,11 +2929,122 @@ def _tiktok_photo_candidates_playwright(
     return candidates, None, None
 
 
+_IG_PROBE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _instagram_post_fast_embed(url: str, timeout: int = 6) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"media_type": "unknown", "images": [], "video_url": None, "title": None, "uploader": None}
+    sc = _instagram_shortcode(url)
+    if not sc:
+        return out
+    try:
+        import requests
+        import html as _html
+
+        embed_url = f"https://www.instagram.com/p/{sc}/embed/captioned/"
+        r = requests.get(
+            embed_url,
+            headers={
+                "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+            },
+            timeout=timeout,
+        )
+        if r.status_code != 200 or not r.text:
+            return out
+        raw_html = r.text
+
+        # Check for contextJSON inside the embed page (contains exact post media/sidecar children only)
+        m_ctx = re.search(r'"contextJSON"\s*:\s*"(\{.*?\})"', raw_html)
+        if m_ctx:
+            try:
+                ctx_str = json.loads(f'"{m_ctx.group(1)}"')
+                ctx_data = json.loads(ctx_str)
+                gql = (ctx_data.get("gql_data") or {}).get("shortcode_media") or ctx_data.get("shortcode_media") or {}
+                if isinstance(gql, dict) and gql:
+                    owner = gql.get("owner") or {}
+                    if isinstance(owner, dict) and owner.get("username"):
+                        out["uploader"] = f"@{owner['username']}"
+                    edges_cap = ((gql.get("edge_media_to_caption") or {}).get("edges") or [])
+                    if edges_cap and isinstance(edges_cap[0], dict):
+                        cap_txt = ((edges_cap[0].get("node") or {}).get("text") or "").strip()
+                        if cap_txt:
+                            out["title"] = re.sub(r"\s+", " ", cap_txt)[:90]
+
+                    sidecar = ((gql.get("edge_sidecar_to_children") or {}).get("edges") or [])
+                    imgs: List[str] = []
+                    vids: List[str] = []
+                    if sidecar:
+                        for edge in sidecar:
+                            node = (edge or {}).get("node") or {}
+                            if node.get("is_video") and node.get("video_url"):
+                                vids.append(str(node["video_url"]))
+                            elif node.get("display_url"):
+                                imgs.append(str(node["display_url"]))
+                    else:
+                        if gql.get("is_video") and gql.get("video_url"):
+                            vids.append(str(gql["video_url"]))
+                        elif gql.get("display_url"):
+                            imgs.append(str(gql["display_url"]))
+
+                    if imgs:
+                        out["media_type"] = "gallery" if len(imgs) > 1 else "image"
+                        out["images"] = imgs
+                        return out
+                    if vids:
+                        out["media_type"] = "video"
+                        out["video_url"] = vids[0]
+                        return out
+            except Exception:
+                pass
+
+        # Fallback: parse EmbeddedMediaImage / EmbeddedMediaVideo tags from embed HTML
+        if "EmbeddedMediaVideo" in raw_html or '"is_video":true' in raw_html:
+            m_v = re.search(r'"video_url"\s*:\s*"(https:[^"]+)"', raw_html)
+            if m_v:
+                v_u = m_v.group(1).replace("\\u0026", "&").replace("\\/", "/")
+                out["media_type"] = "video"
+                out["video_url"] = v_u
+                return out
+
+        embed_imgs: List[str] = []
+        for m_im in re.finditer(r'<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"', raw_html, re.IGNORECASE):
+            u_im = _html.unescape(m_im.group(1)).strip()
+            if u_im.startswith("http") and u_im not in embed_imgs:
+                embed_imgs.append(u_im)
+        if not embed_imgs:
+            for m_im in re.finditer(r'<img[^>]+src="([^"]+)"[^>]+class="[^"]*EmbeddedMediaImage[^"]*"', raw_html, re.IGNORECASE):
+                u_im = _html.unescape(m_im.group(1)).strip()
+                if u_im.startswith("http") and u_im not in embed_imgs:
+                    embed_imgs.append(u_im)
+
+        if embed_imgs:
+            out["media_type"] = "gallery" if len(embed_imgs) > 1 else "image"
+            out["images"] = embed_imgs
+            return out
+    except Exception:
+        pass
+    return out
+
+
 def _instagram_post_probe_playwright(
     url: str,
-    timeout: int = 22,
+    timeout: int = 16,
     cookies_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    sc_key = _instagram_shortcode(url) or url.strip()
+    now_ts = time.time()
+    cached_ig = _IG_PROBE_CACHE.get(sc_key)
+    if cached_ig and (now_ts - cached_ig[0]) < 900.0:
+        return dict(cached_ig[1])
+
+    # 1. Fast HTTP embed check (~0.4s, isolates only the post itself without "More posts from @user")
+    fast_res = _instagram_post_fast_embed(url, timeout=6)
+    if fast_res.get("media_type") in ("image", "gallery", "video"):
+        _IG_PROBE_CACHE[sc_key] = (now_ts, fast_res)
+        return dict(fast_res)
+
     out: Dict[str, Any] = {"media_type": "unknown", "images": [], "video_url": None}
     try:
         from playwright.sync_api import sync_playwright  # type: ignore
@@ -3020,30 +3212,29 @@ def _instagram_post_probe_playwright(
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=max(1, int(timeout)) * 1000)
             try:
-                page.wait_for_load_state("networkidle", timeout=7000)
+                page.wait_for_timeout(1500)
             except Exception:
                 pass
 
-            # Meta tags and media elements.
+            # Scope strictly to the primary post <article> (ignoring the "More posts from..." grid below)
+            _scan_article_js = """() => {
+                const art = document.querySelector('article') || document.querySelector('main') || document.body;
+                const isInsideRelatedGrid = (el) => {
+                    const a = el.closest('a[href*="/p/"], a[href*="/reel/"]');
+                    if (a && !location.pathname.includes(a.getAttribute('href') || '__none__')) return true;
+                    return false;
+                };
+                const imgs = Array.from(art.querySelectorAll('img'))
+                    .filter(i => !isInsideRelatedGrid(i))
+                    .map(i => ({u: (i.currentSrc || i.src || ''), w: (i.naturalWidth || 0), h: (i.naturalHeight || 0)}));
+                const vids = Array.from(art.querySelectorAll('video, video source'))
+                    .filter(v => !isInsideRelatedGrid(v))
+                    .map(v => (v.currentSrc || v.src || v.getAttribute('src') || ''));
+                return {imgs, vids};
+            }"""
+
             try:
-                og_img = page.locator('meta[property="og:image"]').first.get_attribute("content")
-                if og_img:
-                    _add_img(og_img)
-            except Exception:
-                pass
-            try:
-                og_vid = page.locator('meta[property="og:video"]').first.get_attribute("content")
-                if og_vid:
-                    _add_vid(og_vid)
-            except Exception:
-                pass
-            try:
-                medias = page.evaluate(
-                    "() => ({"
-                    "imgs:Array.from(document.images).map(i=>({u:(i.currentSrc||i.src||''),w:(i.naturalWidth||0),h:(i.naturalHeight||0)})),"
-                    "vids:Array.from(document.querySelectorAll('video,video source')).map(v=>(v.currentSrc||v.src||v.getAttribute('src')||''))"
-                    "})"
-                )
+                medias = page.evaluate(_scan_article_js)
                 if isinstance(medias, dict):
                     imgs = medias.get("imgs")
                     if isinstance(imgs, list):
@@ -3057,59 +3248,42 @@ def _instagram_post_probe_playwright(
             except Exception:
                 pass
 
-            # Parse hydrated blobs to capture carousel images.
-            try:
-                html = page.content()
-                for m in re.findall(r'"display_url":"(https:[^"]+)"', html):
-                    _add_img(m)
-                for m in re.findall(r"https://[^\s\"']+cdninstagram\.com[^\s\"']+\.(?:jpe?g|png|webp)[^\s\"']*", html, re.IGNORECASE):
-                    _add_img(m)
-                pat1 = re.compile(
-                    r'"url":"(https:[^"]+cdninstagram[^"]+\.(?:jpe?g|png|webp)[^"]*)"[^\\{\\}\\[\\]]{0,180}?"width":(\d{2,4})[^\\{\\}\\[\\]]{0,80}?"height":(\d{2,4})',
-                    re.IGNORECASE,
-                )
-                pat2 = re.compile(
-                    r'"width":(\d{2,4})[^\\{\\}\\[\\]]{0,80}?"height":(\d{2,4})[^\\{\\}\\[\\]]{0,180}?"url":"(https:[^"]+cdninstagram[^"]+\.(?:jpe?g|png|webp)[^"]*)"',
-                    re.IGNORECASE,
-                )
-                for m in pat1.finditer(html):
-                    ctx = html[max(0, m.start() - 90) : m.start()]
-                    if "cropped" in ctx:
-                        continue
-                    _add_img(m.group(1), w=int(m.group(2)), h=int(m.group(3)))
-                for m in pat2.finditer(html):
-                    ctx = html[max(0, m.start() - 90) : m.start()]
-                    if "cropped" in ctx:
-                        continue
-                    _add_img(m.group(3), w=int(m.group(1)), h=int(m.group(2)))
-                for m in re.findall(r'"video_url":"(https:[^"]+)"', html):
-                    _add_vid(m)
-            except Exception:
-                pass
-
-            # Try navigating carousel.
-            for _ in range(12):
+            # Try navigating carousel ONLY inside the main article
+            for _ in range(10):
                 btn = None
                 try:
                     btn = page.query_selector(
-                        'button[aria-label*="Next" i], button[aria-label*="Siguiente" i], button[aria-label*="Suivant" i]'
+                        'article button[aria-label*="Next" i], article button[aria-label*="Siguiente" i], article button[aria-label*="Suivant" i]'
                     )
                 except Exception:
                     btn = None
                 if not btn:
                     break
                 try:
-                    btn.click(timeout=1200)
+                    btn.click(timeout=1000)
                     page.wait_for_timeout(250)
-                    imgs2 = page.evaluate(
-                        "() => Array.from(document.images).map(i=>({u:(i.currentSrc||i.src||''),w:(i.naturalWidth||0),h:(i.naturalHeight||0)}))"
-                    )
-                    if isinstance(imgs2, list):
-                        for it in imgs2:
+                    medias2 = page.evaluate(_scan_article_js)
+                    if isinstance(medias2, dict):
+                        for it in (medias2.get("imgs") or []):
                             if isinstance(it, dict):
-                                _add_img(str(it.get('u') or ''), w=it.get("w"), h=it.get("h"))
+                                _add_img(str(it.get("u") or ""), w=it.get("w"), h=it.get("h"))
                 except Exception:
                     break
+
+            # Fallback to og:image / og:video only if article scan found nothing
+            if not img_order and not vid_urls:
+                try:
+                    og_vid = page.locator('meta[property="og:video"]').first.get_attribute("content")
+                    if og_vid:
+                        _add_vid(og_vid)
+                except Exception:
+                    pass
+                try:
+                    og_img = page.locator('meta[property="og:image"]').first.get_attribute("content")
+                    if og_img:
+                        _add_img(og_img)
+                except Exception:
+                    pass
 
             try:
                 context.close()
@@ -3162,6 +3336,8 @@ def _instagram_post_probe_playwright(
         out["media_type"] = "video"
         out["video_url"] = vid_urls[0]
     out["images"] = final_imgs
+    if out["media_type"] != "unknown":
+        _IG_PROBE_CACHE[sc_key] = (time.time(), out)
     return out
 
 
@@ -3373,6 +3549,154 @@ def _sniff_twitter_fxapi(url: str, timeout: float = 4.0) -> Dict[str, Any]:
     return res
 
 
+def _sniff_pinterest_pin(url: str, timeout: float = 6.0) -> Dict[str, Any]:
+    """Extract Pinterest Pin video streams or original-resolution images/carousels via PinResource API."""
+    res: Dict[str, Any] = {
+        "found": False,
+        "media_urls": [],
+        "image_urls": [],
+        "kind": "video",
+        "title": None,
+        "thumbnail": None,
+        "uploader": None,
+    }
+    try:
+        import requests
+
+        norm_u = _norm_pinterest(url)
+        m = re.search(r"/pin/(?:[\w-]+--)?(\d+)", norm_u)
+        if not m:
+            return res
+        pin_id = m.group(1)
+
+        headers = {
+            "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Pinterest-PWS-Handler": "www/[username].js",
+            "Referer": f"https://www.pinterest.com/pin/{pin_id}/",
+        }
+        opts = {"options": {"field_set_key": "unauth_react_main_pin", "id": pin_id}}
+        r = requests.get(
+            "https://www.pinterest.com/resource/PinResource/get/",
+            params={"data": json.dumps(opts)},
+            headers=headers,
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return res
+
+        data = ((r.json() or {}).get("resource_response") or {}).get("data") or {}
+        if not isinstance(data, dict) or not data:
+            return res
+
+        title = (data.get("title") or data.get("grid_title") or data.get("seo_title") or "").strip()
+        if not title:
+            desc = (data.get("description") or data.get("seo_description") or "").strip()
+            if desc:
+                title = re.sub(r"\s+", " ", desc)[:80]
+        res["title"] = title or f"Pinterest Pin {pin_id}"
+
+        attrib = data.get("closeup_attribution") or data.get("pinner") or data.get("native_creator") or {}
+        if isinstance(attrib, dict):
+            res["uploader"] = attrib.get("full_name") or attrib.get("username") or "Pinterest"
+
+        images_dict = data.get("images") or {}
+        orig_img = (images_dict.get("orig") or images_dict.get("736x") or {}).get("url") if isinstance(images_dict, dict) else None
+        if orig_img:
+            res["thumbnail"] = str(orig_img)
+
+        # 1. Check for video streams (standard video pin or story_pin_data video blocks)
+        v_list: Dict[str, Any] = {}
+        videos_node = data.get("videos")
+        if isinstance(videos_node, dict) and isinstance(videos_node.get("video_list"), dict):
+            v_list.update(videos_node["video_list"])
+
+        story_data = data.get("story_pin_data")
+        if isinstance(story_data, dict):
+            for page in (story_data.get("pages") or []):
+                if not isinstance(page, dict):
+                    continue
+                for block in (page.get("blocks") or []):
+                    if not isinstance(block, dict):
+                        continue
+                    vid_b = block.get("video")
+                    if isinstance(vid_b, dict) and isinstance(vid_b.get("video_list"), dict):
+                        v_list.update(vid_b["video_list"])
+
+        mp4_candidates: List[Tuple[int, str]] = []
+        hls_candidates: List[str] = []
+        for fmt_id, fmt_val in v_list.items():
+            if not isinstance(fmt_val, dict):
+                continue
+            v_url = str(fmt_val.get("url") or "").strip()
+            if not v_url.startswith("http"):
+                continue
+            if not res["thumbnail"] and fmt_val.get("thumbnail"):
+                res["thumbnail"] = str(fmt_val["thumbnail"])
+            area = int(fmt_val.get("width") or 0) * int(fmt_val.get("height") or 0)
+            if v_url.lower().endswith(".mp4") or "mp4" in fmt_id.lower():
+                mp4_candidates.append((area, v_url))
+            elif ".m3u8" in v_url.lower() or "hls" in fmt_id.lower():
+                if v_url not in hls_candidates:
+                    hls_candidates.append(v_url)
+
+        mp4_candidates.sort(key=lambda x: x[0], reverse=True)
+        video_urls = [u for _, u in mp4_candidates] + hls_candidates
+        if video_urls:
+            res["found"] = True
+            res["kind"] = "video"
+            res["media_urls"] = video_urls
+            return res
+
+        # 2. Check for multi-image carousel or story pin images, or single original image
+        img_urls: List[str] = []
+        carousel = (data.get("carousel_data") or {}).get("carousel_slots") or []
+        if isinstance(carousel, list):
+            for slot in carousel:
+                if not isinstance(slot, dict):
+                    continue
+                s_imgs = slot.get("images") or {}
+                if isinstance(s_imgs, dict):
+                    best_slot = None
+                    for k in ("orig", "736x", "564x", "474x"):
+                        if isinstance(s_imgs.get(k), dict) and s_imgs[k].get("url"):
+                            best_slot = str(s_imgs[k]["url"])
+                            break
+                    if not best_slot:
+                        for v_im in s_imgs.values():
+                            if isinstance(v_im, dict) and v_im.get("url"):
+                                best_slot = str(v_im["url"])
+                                break
+                    if best_slot and best_slot not in img_urls:
+                        img_urls.append(best_slot)
+
+        if not img_urls and isinstance(story_data, dict):
+            for page in (story_data.get("pages") or []):
+                if not isinstance(page, dict):
+                    continue
+                for block in (page.get("blocks") or []):
+                    if not isinstance(block, dict):
+                        continue
+                    b_imgs = (block.get("image") or {}).get("images") or {}
+                    if isinstance(b_imgs, dict):
+                        u_b = (b_imgs.get("originals") or b_imgs.get("orig") or b_imgs.get("736x") or {}).get("url")
+                        if u_b and str(u_b) not in img_urls:
+                            img_urls.append(str(u_b))
+
+        if not img_urls and orig_img:
+            img_urls.append(str(orig_img))
+
+        if img_urls:
+            res["found"] = True
+            res["kind"] = "imagen"
+            res["image_urls"] = img_urls
+            if not res["thumbnail"]:
+                res["thumbnail"] = img_urls[0]
+    except Exception:
+        pass
+    return res
+
+
 def _extract_html_meta_and_media(html_text: str, base_url: str) -> Dict[str, Any]:
     """Parse HTML string for OpenGraph/Twitter metadata and embedded video/audio/iframe URLs."""
     import html as _html
@@ -3518,6 +3842,14 @@ def sniff_media_from_webpage(
             tw["referer"] = norm_u
             _SNIFF_CACHE[norm_u] = (now, tw)
             return dict(tw)
+
+    # 1b. Pinterest fast API (supports pin.it and pinterest.*/pin/* for both videos & images/carousels)
+    if platform_id == "pinterest":
+        pin = _sniff_pinterest_pin(norm_u)
+        if pin.get("found"):
+            pin["referer"] = "https://www.pinterest.com/"
+            _SNIFF_CACHE[norm_u] = (now, pin)
+            return dict(pin)
 
     # 2. Fast HTTP / HTML scan
     html_meta: Dict[str, Any] = {}
@@ -3893,6 +4225,18 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
             if out["title"] or out["thumbnail"]:
                 return out
 
+        # 5b. Pinterest via PinResource JSON API
+        if out["platform"] == "pinterest":
+            pin = _sniff_pinterest_pin(url, timeout=4.0)
+            if pin.get("title"):
+                out["title"] = pin["title"]
+            if pin.get("thumbnail"):
+                out["thumbnail"] = pin["thumbnail"]
+            if pin.get("uploader"):
+                out["creator"] = pin["uploader"]
+            if out["title"] or out["thumbnail"]:
+                return out
+
         # 6. Generic OpenGraph / HTML metadata for any public URL
         if _is_safe_public_url(url):
             try:
@@ -4076,8 +4420,101 @@ def probe_media_capabilities(
             "summary": "TikTok photo: se asume imagen/carrusel",
         }
 
+    # Fast detection for Pinterest (video pins + single/carousel image pins in <0.5s)
+    if platform == "pinterest":
+        pin = _sniff_pinterest_pin(url, timeout=6.0)
+        if pin.get("found"):
+            is_vid = pin.get("kind") == "video"
+            pin_imgs = [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(pin.get("image_urls") or [], start=1)
+                if u
+            ]
+            return {
+                "url": url,
+                "platform": "pinterest",
+                "supports_audio": is_vid,
+                "supports_video": is_vid,
+                "supports_image": not is_vid,
+                "allowed_kinds": ["audio", "video"] if is_vid else ["imagen"],
+                "detected_kind": "video" if is_vid else "imagen",
+                "summary": pin.get("title") or ("Pinterest: video detectado" if is_vid else "Pinterest: imagen detectada"),
+                "title": pin.get("title"),
+                "thumbnail": pin.get("thumbnail"),
+                "uploader": pin.get("uploader"),
+                "image_candidates": pin_imgs,
+                "auth_required": False,
+                "used_cookies": False,
+            }
+
+    # Fast detection for X / Twitter (video tweets + 1-4 photo tweets in <0.5s)
+    if platform == "twitter":
+        tw = _sniff_twitter_fxapi(url, timeout=4.5)
+        if tw.get("found"):
+            is_vid = tw.get("kind") == "video"
+            tw_imgs = [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(tw.get("image_urls") or [], start=1)
+                if u
+            ]
+            return {
+                "url": url,
+                "platform": "twitter",
+                "supports_audio": is_vid,
+                "supports_video": is_vid,
+                "supports_image": not is_vid,
+                "allowed_kinds": ["audio", "video"] if is_vid else ["imagen"],
+                "detected_kind": "video" if is_vid else "imagen",
+                "summary": tw.get("title") or ("X: video detectado" if is_vid else "X: imagen detectada"),
+                "title": tw.get("title"),
+                "thumbnail": tw.get("thumbnail"),
+                "uploader": tw.get("uploader"),
+                "image_candidates": tw_imgs,
+                "auth_required": False,
+                "used_cookies": False,
+            }
+
     is_instagram_reel = platform == "instagram" and "/reel/" in path
     is_instagram_post = platform == "instagram" and "/p/" in path and not is_instagram_reel
+
+    if is_instagram_post:
+        ig_probe = _instagram_post_probe_playwright(url, timeout=14, cookies_path=cookies_path)
+        ig_mtype = str(ig_probe.get("media_type") or "unknown").lower()
+        ig_imgs = [str(u or "").strip() for u in (ig_probe.get("images") or []) if str(u or "").strip()]
+        if ig_mtype in ("image", "gallery") and ig_imgs:
+            cand_items = [{"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"} for i, u in enumerate(ig_imgs, start=1)]
+            return {
+                "url": url,
+                "platform": "instagram",
+                "supports_audio": False,
+                "supports_video": False,
+                "supports_image": True,
+                "allowed_kinds": ["imagen"],
+                "detected_kind": "imagen",
+                "summary": ig_probe.get("title") or "Instagram: imagen/carrusel detectado",
+                "title": ig_probe.get("title"),
+                "thumbnail": ig_imgs[0],
+                "uploader": ig_probe.get("uploader"),
+                "image_candidates": cand_items,
+                "auth_required": False,
+                "used_cookies": False,
+            }
+        if ig_mtype == "video":
+            return {
+                "url": url,
+                "platform": "instagram",
+                "supports_audio": True,
+                "supports_video": True,
+                "supports_image": False,
+                "allowed_kinds": ["audio", "video"],
+                "detected_kind": "video",
+                "summary": ig_probe.get("title") or "Instagram: video detectado",
+                "title": ig_probe.get("title"),
+                "thumbnail": ig_imgs[0] if ig_imgs else None,
+                "uploader": ig_probe.get("uploader"),
+                "auth_required": False,
+                "used_cookies": False,
+            }
 
     opts: Dict[str, Any] = {
         "quiet": True,
@@ -4439,11 +4876,12 @@ def probe_image_candidates(
                 except Exception:
                     pass
             try:
-                use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
-                if use_pw not in ("0", "false", "no", "off"):
-                    candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=15, cookies_path=tiktok_ck)
+                # Try fast HTML/JSON extraction first (~1s) before launching headless Chromium
+                candidates2, _, _ = _tiktok_photo_candidates(url, timeout=10)
                 if not candidates2:
-                    candidates2, _, _ = _tiktok_photo_candidates(url, timeout=18)
+                    use_pw = (os.environ.get("MEDIA_DOWNLOADER_TIKTOK_PHOTO_PLAYWRIGHT", "1") or "").strip().lower()
+                    if use_pw not in ("0", "false", "no", "off"):
+                        candidates2, _, _ = _tiktok_photo_candidates_playwright(url, timeout=14, cookies_path=tiktok_ck)
             except Exception:
                 candidates2 = []
 
@@ -4488,28 +4926,57 @@ def probe_image_candidates(
             )
         return [c for c in out2 if c.get("url")]
 
+    plat_id = _detect_platform_id(url)
+    if plat_id == "pinterest":
+        pin = _sniff_pinterest_pin(url, timeout=6.0)
+        if pin.get("image_urls"):
+            return [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(pin["image_urls"][: max(1, int(max_items))], start=1)
+                if u
+            ]
+
+    if plat_id == "twitter":
+        tw = _sniff_twitter_fxapi(url, timeout=4.5)
+        if tw.get("image_urls"):
+            return [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(tw["image_urls"][: max(1, int(max_items))], start=1)
+                if u
+            ]
+
     is_instagram_post = "instagram.com" in host and "/p/" in path and "/reel/" not in path
     if "instagram.com" in host:
         try:
             cookies_path = get_cookiefile_for_platform("instagram")
         except Exception:
             cookies_path = cookies_path
+
+    if is_instagram_post:
+        ig_pw = _instagram_post_probe_playwright(url, timeout=16, cookies_path=cookies_path)
+        if str(ig_pw.get("media_type") or "").lower() in ("image", "gallery"):
+            imgs = [str(u or "").strip() for u in (ig_pw.get("images") or []) if str(u or "").strip()]
+            if imgs:
+                return [
+                    {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                    for i, u in enumerate(imgs[: max(1, int(max_items))], start=1)
+                ]
+
     info, _, _ = _extract_info_with_cookie_fallback(url, opts, cookies_path)
     if not info:
-        if is_instagram_post:
-            ig_pw = _instagram_post_probe_playwright(url, timeout=22, cookies_path=cookies_path)
-            if str(ig_pw.get("media_type") or "").lower() in ("image", "gallery"):
-                imgs = [str(u or "").strip() for u in (ig_pw.get("images") or []) if str(u or "").strip()]
-                return [{"url": u, "label": f"IMAGE {i}"} for i, u in enumerate(imgs[: max(1, int(max_items))], start=1)]
+        sniffed = sniff_media_from_webpage(url, timeout=12, cookies_path=cookies_path, use_playwright=False)
+        s_imgs = list(sniffed.get("image_urls") or [])
+        if not s_imgs and sniffed.get("thumbnail"):
+            s_imgs = [str(sniffed["thumbnail"])]
+        if s_imgs:
+            return [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(s_imgs[: max(1, int(max_items))], start=1)
+                if u
+            ]
         return []
 
     candidates = _collect_image_candidates(info)
-    if not candidates and is_instagram_post:
-        ig_pw = _instagram_post_probe_playwright(url, timeout=22, cookies_path=cookies_path)
-        if str(ig_pw.get("media_type") or "").lower() in ("image", "gallery"):
-            imgs = [str(u or "").strip() for u in (ig_pw.get("images") or []) if str(u or "").strip()]
-            return [{"url": u, "label": f"IMAGE {i}"} for i, u in enumerate(imgs[: max(1, int(max_items))], start=1)]
-
     out: List[Dict[str, str]] = []
     for idx, c in enumerate(candidates[: max(1, int(max_items))], start=1):
         u = str(c.get("url") or "").strip()

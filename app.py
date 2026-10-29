@@ -1227,7 +1227,8 @@ def api_detect():
                 resolved_url=resolved_out,
                 detected_kind="image",
                 allowed_kinds=["image"],
-                items=[],
+                items=[{"url": first_url, "thumb": first_url, "label": "IMAGE 1", "kind": "image"}],
+                thumbnail=first_url,
             )
         )
 
@@ -1360,8 +1361,8 @@ def api_detect():
         else:
             detected_front = None
 
-    image_candidates: List[Dict[str, str]] = []
-    if allowed_front == ["image"]:
+    image_candidates: List[Dict[str, str]] = list(caps.get("image_candidates") or [])
+    if not image_candidates and (allowed_front == ["image"] or detected_front == "image"):
         try:
             image_candidates = probe_image_candidates(first_url, cookies_path=cookies_path)
         except Exception:
@@ -1467,15 +1468,9 @@ def api_thumb():
     if scheme not in ("http", "https"):
         abort(400)
 
-    allowed = (
-        host.endswith("tiktokcdn.com")
-        or host.endswith("tiktokcdn-us.com")
-        or host.endswith("muscdn.com")
-        or host.endswith("cdninstagram.com")
-        or host.endswith("fbcdn.net")
-        or ".tiktokcdn" in host
-    )
-    if not allowed:
+    from media_tools import _is_safe_public_url
+
+    if not _is_safe_public_url(u):
         abort(403)
 
     cached = _cache_preview_image(u, referer=ref)

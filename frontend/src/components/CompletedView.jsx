@@ -24,7 +24,7 @@ function getDownloadUrl(url, name) {
   }
 }
 
-function FileCard({ file }) {
+function FileCard({ file, showAction = true }) {
   const [downloading, setDownloading] = useState(false);
   const icon = KIND_ICONS[file.kind] || 'description';
 
@@ -54,19 +54,21 @@ function FileCard({ file }) {
         <p className="text-xs font-bold text-[#dee3e7] truncate">{file.name}</p>
         <p className="text-[11px] font-mono text-[#869391]">{file.kind?.toUpperCase()}</p>
       </div>
-      <button
-        onClick={handleDownload}
-        disabled={downloading}
-        className="w-9 h-9 rounded-lg bg-[#5fd0c8]/10 hover:bg-[#5fd0c8] hover:text-[#041014] text-[#5fd0c8] flex items-center justify-center shrink-0 transition-all disabled:opacity-50"
-        title={`Descargar ${file.name}`}
-        type="button"
-      >
-        {downloading ? (
-          <span className="material-symbols-outlined text-[16px] animate-spin">refresh</span>
-        ) : (
-          <span className="material-symbols-outlined text-[16px]">download</span>
-        )}
-      </button>
+      {showAction && (
+        <button
+          onClick={handleDownload}
+          disabled={downloading}
+          className="w-9 h-9 rounded-lg bg-[#5fd0c8]/10 hover:bg-[#5fd0c8] hover:text-[#041014] text-[#5fd0c8] flex items-center justify-center shrink-0 transition-all disabled:opacity-50"
+          title={`Descargar ${file.name}`}
+          type="button"
+        >
+          {downloading ? (
+            <span className="material-symbols-outlined text-[16px] animate-spin">refresh</span>
+          ) : (
+            <span className="material-symbols-outlined text-[16px]">download</span>
+          )}
+        </button>
+      )}
     </div>
   );
 }
@@ -160,10 +162,10 @@ export default function CompletedView({ completedItem, onNewDownload }) {
 
           <div className="flex flex-col gap-2">
             {/* ZIP only for galleries */}
-            {showZip && <FileCard file={zip} />}
+            {showZip && <FileCard file={zip} showAction={true} />}
             {/* Individual files */}
             {files.map((f, i) => (
-              <FileCard key={i} file={f} />
+              <FileCard key={i} file={f} showAction={!(files.length === 1 && !showZip)} />
             ))}
           </div>
         </div>
@@ -198,7 +200,14 @@ export default function CompletedView({ completedItem, onNewDownload }) {
             className="w-full h-14 rounded-2xl bg-[#5fd0c8] hover:bg-[#7FE0D8] active:bg-[#46B8B0] text-[#041014] text-base font-bold flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(95,208,200,0.35)] active:scale-[0.98] transition-all cursor-pointer"
           >
             <span className="material-symbols-outlined text-[24px]">download</span>
-            <span>Descargar {completedItem?.type === 'audio' ? 'Audio' : 'Video'}</span>
+            <span>
+              Descargar{' '}
+              {completedItem?.type === 'audio'
+                ? 'Audio'
+                : completedItem?.type === 'image' || files[0]?.kind === 'image'
+                  ? 'Imagen'
+                  : 'Video'}
+            </span>
           </a>
         ) : null}
 

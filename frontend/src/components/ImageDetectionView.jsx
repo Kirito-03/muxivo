@@ -13,16 +13,25 @@ export default function ImageDetectionView({
 
   // Real image candidates from the server
   const candidates = mediaData?.imageCandidates || [];
-  const photos = candidates.length > 0
+  const rawPhotos = candidates.length > 0
     ? candidates.map((c) => c.url || c.thumb).filter(Boolean)
     : [mediaData?.thumbnail].filter(Boolean);
-  const totalPhotos = photos.length;
+  const totalPhotos = rawPhotos.length;
+  const isMultiPhoto = totalPhotos > 1;
+
+  const toPreviewUrl = (u) => {
+    if (!u) return '';
+    if (u.startsWith('/')) return u;
+    return `/api/thumb?url=${encodeURIComponent(u)}`;
+  };
 
   const handlePrev = () => {
+    if (!isMultiPhoto) return;
     setPhotoIndex((prev) => (prev - 1 + totalPhotos) % totalPhotos);
   };
 
   const handleNext = () => {
+    if (!isMultiPhoto) return;
     setPhotoIndex((prev) => (prev + 1) % totalPhotos);
   };
 
@@ -34,19 +43,19 @@ export default function ImageDetectionView({
     }
   };
 
-  const sizeStr = format === 'JPG' ? '3.2 MB' : '9.8 MB';
-  const buttonLabel =
-    scope === 'all'
-      ? `Descargar Galería (${sizeStr})`
-      : `Descargar Foto ${photoIndex + 1} (${sizeStr})`;
+  const buttonLabel = !isMultiPhoto
+    ? `Descargar Imagen (${format})`
+    : scope === 'all'
+      ? `Descargar Galería (${totalPhotos} fotos • ${format})`
+      : `Descargar Foto ${photoIndex + 1} (${format})`;
 
   const handleDownload = () => {
     // Collect image URLs to download
     let imageUrls;
-    if (scope === 'all') {
+    if (!isMultiPhoto || scope === 'all') {
       imageUrls = candidates.length > 0
         ? candidates.map((c) => c.url).filter(Boolean)
-        : undefined;
+        : rawPhotos.filter((u) => u && u.startsWith('http'));
     } else {
       const candidate = candidates[photoIndex];
       imageUrls = candidate ? [candidate.url] : undefined;
@@ -58,14 +67,14 @@ export default function ImageDetectionView({
       format_id: format.toLowerCase(),
       detail: '',
       sessionId,
-      imageUrls,
-      title: scope === 'all'
-        ? (mediaData.summary || mediaData.platform)
-        : `${mediaData.summary || mediaData.platform} (Foto ${photoIndex + 1})`,
+      imageUrls: imageUrls && imageUrls.length > 0 ? imageUrls : undefined,
+      title: !isMultiPhoto || scope === 'all'
+        ? (mediaData.title || mediaData.summary || mediaData.platform)
+        : `${mediaData.title || mediaData.summary || mediaData.platform} (Foto ${photoIndex + 1})`,
       platform: mediaData.platform,
       type: 'image',
-      thumbnail: photos[photoIndex] || null,
-      format: `${scope === 'all' ? 'Galería' : 'Foto'} ${format} • ${scope === 'all' ? `${totalPhotos} fotos` : '1 foto'}`,
+      thumbnail: toPreviewUrl(rawPhotos[photoIndex]) || null,
+      format: `${isMultiPhoto && scope === 'all' ? 'Galería' : 'Imagen'} ${format} • ${isMultiPhoto && scope === 'all' ? `${totalPhotos} fotos` : '1 foto'}`,
     });
   };
 
@@ -104,39 +113,49 @@ export default function ImageDetectionView({
       <div className="relative w-full bg-[#1b2024] rounded-2xl p-5 sm:p-6 shadow-xl border border-[#1E3640] flex flex-col gap-4">
         {/* Preview with Navigation */}
         <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#090f12] shadow-inner border border-[#1E3640]/50 group">
-          <img
-            src={photos[photoIndex]}
-            alt={`Foto ${photoIndex + 1}`}
-            className="w-full h-full object-cover transition-all duration-300"
-          />
+          {rawPhotos[photoIndex] ? (
+            <img
+              src={toPreviewUrl(rawPhotos[photoIndex])}
+              alt={`Foto ${photoIndex + 1}`}
+              className="w-full h-full object-contain bg-[#090f12] transition-all duration-300"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-[#5fd0c8]/40">
+              <span className="material-symbols-outlined text-[48px]">image</span>
+            </div>
+          )}
 
           {/* Photo Counter Pill */}
           <div className="absolute top-3 left-3 flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#090f12]/85 backdrop-blur-md border border-[#1E3640] shadow-md">
-            <span className="material-symbols-outlined text-[16px] text-[#7dece4]">photo_library</span>
+            <span className="material-symbols-outlined text-[16px] text-[#7dece4]">
+              {isMultiPhoto ? 'photo_library' : 'image'}
+            </span>
             <span className="font-mono text-xs text-[#dee3e7]">
-              {photoIndex + 1} de {totalPhotos} fotos
+              {isMultiPhoto ? `${photoIndex + 1} de ${totalPhotos} fotos` : 'Imagen única'}
             </span>
           </div>
 
-          {/* Carousel Arrows */}
-          <div className="absolute inset-x-3 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-auto">
-            <button
-              onClick={handlePrev}
-              className="w-9 h-9 rounded-full bg-[#090f12]/80 hover:bg-[#5fd0c8] text-[#dee3e7] hover:text-[#041014] flex items-center justify-center transition-all shadow-md active:scale-95"
-              title="Foto anterior"
-              type="button"
-            >
-              <span className="material-symbols-outlined text-[20px]">chevron_left</span>
-            </button>
-            <button
-              onClick={handleNext}
-              className="w-9 h-9 rounded-full bg-[#090f12]/80 hover:bg-[#5fd0c8] text-[#dee3e7] hover:text-[#041014] flex items-center justify-center transition-all shadow-md active:scale-95"
-              title="Foto siguiente"
-              type="button"
-            >
-              <span className="material-symbols-outlined text-[20px]">chevron_right</span>
-            </button>
-          </div>
+          {/* Carousel Arrows (only when gallery has >1 photo) */}
+          {isMultiPhoto && (
+            <div className="absolute inset-x-3 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-auto">
+              <button
+                onClick={handlePrev}
+                className="w-9 h-9 rounded-full bg-[#090f12]/80 hover:bg-[#5fd0c8] text-[#dee3e7] hover:text-[#041014] flex items-center justify-center transition-all shadow-md active:scale-95"
+                title="Foto anterior"
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[20px]">chevron_left</span>
+              </button>
+              <button
+                onClick={handleNext}
+                className="w-9 h-9 rounded-full bg-[#090f12]/80 hover:bg-[#5fd0c8] text-[#dee3e7] hover:text-[#041014] flex items-center justify-center transition-all shadow-md active:scale-95"
+                title="Foto siguiente"
+                type="button"
+              >
+                <span className="material-symbols-outlined text-[20px]">chevron_right</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Info & Badges */}
@@ -144,11 +163,11 @@ export default function ImageDetectionView({
           <div className="flex items-center justify-between">
             <span className="text-xs font-mono text-[#bcc9c7]">{mediaData?.platform}</span>
             <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-mono text-xs font-semibold border border-amber-500/30">
-              {mediaData?.isGallery ? 'Galería' : 'Imagen'}
+              {isMultiPhoto ? `Galería (${totalPhotos})` : 'Imagen'}
             </span>
           </div>
           <h2 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug">
-            {mediaData?.summary || mediaData?.platform || 'Imagen detectada'}
+            {mediaData?.title || mediaData?.summary || mediaData?.platform || 'Imagen detectada'}
           </h2>
           {mediaData.message && (
             <div className="mt-1 p-3 rounded-xl bg-[#252b2e] border border-[#f0c060]/40 text-[#f0c060] text-xs font-mono">
@@ -160,38 +179,40 @@ export default function ImageDetectionView({
 
         {/* 3. Scope & Format Selectors */}
         <div className="flex flex-col gap-3 pt-2 border-t border-[#1E3640]">
-          {/* Scope (Todas vs Solo esta) */}
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-mono text-[#bcc9c7] uppercase tracking-wider">
-              Ámbito de descarga:
-            </span>
-            <div className="grid grid-cols-2 gap-2 bg-[#090f12] p-1 rounded-xl border border-[#1E3640]">
-              <button
-                type="button"
-                onClick={() => setScope('all')}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
-                  scope === 'all'
-                    ? 'bg-[#252b2e] border border-[#5fd0c8] text-[#7dece4] shadow-sm'
-                    : 'text-[#bcc9c7] hover:text-[#dee3e7]'
-                }`}
-              >
-                <span className="material-symbols-outlined text-[16px]">collections</span>
-                <span>Todas ({totalPhotos})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setScope('single')}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
-                  scope === 'single'
-                    ? 'bg-[#252b2e] border border-[#5fd0c8] text-[#7dece4] shadow-sm'
-                    : 'text-[#bcc9c7] hover:text-[#dee3e7]'
-                }`}
-              >
-                <span className="material-symbols-outlined text-[16px]">crop_original</span>
-                <span>Solo esta (#{photoIndex + 1})</span>
-              </button>
+          {/* Scope (Todas vs Solo esta) - only shown when there are multiple photos */}
+          {isMultiPhoto && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-mono text-[#bcc9c7] uppercase tracking-wider">
+                Ámbito de descarga:
+              </span>
+              <div className="grid grid-cols-2 gap-2 bg-[#090f12] p-1 rounded-xl border border-[#1E3640]">
+                <button
+                  type="button"
+                  onClick={() => setScope('all')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
+                    scope === 'all'
+                      ? 'bg-[#252b2e] border border-[#5fd0c8] text-[#7dece4] shadow-sm'
+                      : 'text-[#bcc9c7] hover:text-[#dee3e7]'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">collections</span>
+                  <span>Todas ({totalPhotos})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScope('single')}
+                  className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all ${
+                    scope === 'single'
+                      ? 'bg-[#252b2e] border border-[#5fd0c8] text-[#7dece4] shadow-sm'
+                      : 'text-[#bcc9c7] hover:text-[#dee3e7]'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">crop_original</span>
+                  <span>Solo esta (#{photoIndex + 1})</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Format (JPG vs PNG) */}
           <div className="flex flex-col gap-1.5">
