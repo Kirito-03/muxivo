@@ -18,10 +18,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Asegurar que podamos importar worker.py desde la raíz del repositorio
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# Asegurar que podamos importar worker.py tanto desde ~/share_download.py como desde repo/termux/share_download.py
+_HERE = Path(__file__).resolve().parent
+REPO_ROOT = _HERE if (_HERE / "worker.py").exists() else _HERE.parent
+for _p in (str(_HERE), str(REPO_ROOT), str(Path.home())):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import worker as wk  # noqa: E402
 
@@ -239,3 +241,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

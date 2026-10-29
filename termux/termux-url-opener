@@ -5,9 +5,12 @@
 set -u
 
 SHARED_TEXT="${1:-}"
-REPO_DIR="${MUVIXO_REPO_DIR:-$HOME/muxivo}"
-if [ ! -d "$REPO_DIR" ] && [ -d "$HOME/muvixo" ]; then
-    REPO_DIR="$HOME/muvixo"
+if [ -f "$HOME/share_download.py" ]; then
+    SHARE_SCRIPT="$HOME/share_download.py"
+elif [ -f "$HOME/muxivo/termux/share_download.py" ]; then
+    SHARE_SCRIPT="$HOME/muxivo/termux/share_download.py"
+else
+    SHARE_SCRIPT="$HOME/muvixo/termux/share_download.py"
 fi
 
 clear
@@ -29,7 +32,7 @@ if [ "${CHOICE:-1}" = "2" ]; then
     MODE_FLAG="--audio"
 fi
 
-python "$REPO_DIR/termux/share_download.py" $MODE_FLAG "$SHARED_TEXT"
+python "$SHARE_SCRIPT" $MODE_FLAG "$SHARED_TEXT"
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then
@@ -38,3 +41,4 @@ if [ $STATUS -ne 0 ]; then
 else
     sleep 1
 fi
+
