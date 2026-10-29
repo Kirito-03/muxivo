@@ -1963,9 +1963,11 @@ def api_download():
     )
 
 
+_start_autodestruct_daemon()
+log_worker_status()
+
+
 if __name__ == "__main__":
-    _start_autodestruct_daemon()
-    log_worker_status()
     port = int(os.environ.get("PORT", "7860"))
     debug = os.environ.get("FLASK_DEBUG", "").strip() in ("1", "true", "yes")
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)
