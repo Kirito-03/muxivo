@@ -3226,23 +3226,576 @@ def _normalize_tiktok_photo_image_url(u: str) -> str:
     return s
 
 
+_SNIFF_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SNIFF_CACHE_TTL = 900.0  # 15 minutes
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """Ensure a URL uses http/https and resolves only to public internet IPs (SSRF protection)."""
+    if not url:
+        return False
+    try:
+        import ipaddress
+        import socket
+
+        p = urlparse(url.strip())
+        if p.scheme.lower() not in ("http", "https"):
+            return False
+        hostname = (p.hostname or "").strip().lower()
+        if not hostname or hostname in ("localhost", "localhost.localdomain"):
+            return False
+        if hostname.endswith((".local", ".internal", ".lan")):
+            return False
+
+        addr_info = socket.getaddrinfo(hostname, p.port or (443 if p.scheme.lower() == "https" else 80))
+        if not addr_info:
+            return False
+        cgnat_net = ipaddress.ip_network("100.64.0.0/10")
+        for item in addr_info:
+            ip_str = item[4][0]
+            ip_obj = ipaddress.ip_address(ip_str)
+            if (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+                or ip_obj.is_reserved
+                or ip_obj.is_unspecified
+                or (isinstance(ip_obj, ipaddress.IPv4Address) and ip_obj in cgnat_net)
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _detect_platform_id(url: str) -> str:
+    """Identify the platform slug for any URL."""
+    if not url:
+        return "other"
+    try:
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lower()
+    except Exception:
+        return "other"
+
+    if re.search(r"\.(mp4|webm|mkv|mov|avi|m3u8|mpd|mp3|m4a|wav|flac|ogg|opus)(\?|#|$)", path, re.IGNORECASE):
+        return "direct"
+    if "youtube.com" in host or "youtu.be" in host:
+        return "youtube"
+    if "tiktok.com" in host:
+        return "tiktok"
+    if "instagram.com" in host:
+        return "instagram"
+    if "x.com" in host or "twitter.com" in host or host == "t.co" or "fxtwitter.com" in host or "vxtwitter.com" in host:
+        return "twitter"
+    if "facebook.com" in host or "fb.watch" in host or "fb.com" in host:
+        return "facebook"
+    if "threads.net" in host or "threads.com" in host:
+        return "threads"
+    if "soundcloud.com" in host or "snd.sc" in host:
+        return "soundcloud"
+    if "reddit.com" in host or "redd.it" in host or "v.redd.it" in host:
+        return "reddit"
+    if "twitch.tv" in host:
+        return "twitch"
+    if "vimeo.com" in host:
+        return "vimeo"
+    if "pinterest." in host or "pin.it" in host:
+        return "pinterest"
+    if "dailymotion.com" in host or "dai.ly" in host:
+        return "dailymotion"
+    return "other"
+
+
+def _sniff_twitter_fxapi(url: str, timeout: float = 4.0) -> Dict[str, Any]:
+    """Query fxtwitter public JSON API for X/Twitter status URLs."""
+    res: Dict[str, Any] = {
+        "found": False,
+        "media_urls": [],
+        "image_urls": [],
+        "kind": "video",
+        "title": None,
+        "thumbnail": None,
+        "uploader": None,
+    }
+    try:
+        import requests
+
+        m = re.search(r"(?:x\.com|twitter\.com)/(?:[^/?#]+/status|i/web/status|i/status)/(\d+)", url, re.IGNORECASE)
+        if not m:
+            return res
+        status_id = m.group(1)
+        api_url = f"https://api.fxtwitter.com/status/{status_id}"
+        r = requests.get(api_url, timeout=timeout, headers={"User-Agent": _DEFAULT_UA})
+        if r.status_code != 200:
+            return res
+        data = r.json() or {}
+        tweet = data.get("tweet") or {}
+        if not isinstance(tweet, dict):
+            return res
+
+        author = tweet.get("author") or {}
+        screen_name = author.get("screen_name")
+        author_name = author.get("name")
+        res["uploader"] = f"@{screen_name}" if screen_name else author_name
+        text = (tweet.get("text") or "").strip()
+        if text:
+            res["title"] = re.sub(r"\s+", " ", text)[:100]
+        elif res["uploader"]:
+            res["title"] = f"Post de {res['uploader']} en X"
+
+        media = tweet.get("media") or {}
+        videos = media.get("videos") or []
+        photos = media.get("photos") or []
+
+        for v in videos:
+            if isinstance(v, dict) and v.get("url"):
+                res["media_urls"].append(str(v["url"]))
+                if not res["thumbnail"] and v.get("thumbnail_url"):
+                    res["thumbnail"] = str(v["thumbnail_url"])
+
+        for ph in photos:
+            if isinstance(ph, dict) and ph.get("url"):
+                res["image_urls"].append(str(ph["url"]))
+                if not res["thumbnail"]:
+                    res["thumbnail"] = str(ph["url"])
+
+        if res["media_urls"]:
+            res["found"] = True
+            res["kind"] = "video"
+        elif res["image_urls"]:
+            res["found"] = True
+            res["kind"] = "imagen"
+    except Exception:
+        pass
+    return res
+
+
+def _extract_html_meta_and_media(html_text: str, base_url: str) -> Dict[str, Any]:
+    """Parse HTML string for OpenGraph/Twitter metadata and embedded video/audio/iframe URLs."""
+    import html as _html
+    from urllib.parse import urljoin
+
+    out: Dict[str, Any] = {
+        "title": None,
+        "thumbnail": None,
+        "uploader": None,
+        "media_urls": [],
+        "embed_urls": [],
+        "kind": "video",
+    }
+    if not html_text:
+        return out
+
+    def _meta(prop_names: List[str]) -> Optional[str]:
+        for name in prop_names:
+            for pat in (
+                rf'<meta[^>]+(?:property|name|itemprop)\s*=\s*["\']{re.escape(name)}["\'][^>]+content\s*=\s*["\']([^"\']+)["\']',
+                rf'<meta[^>]+content\s*=\s*["\']([^"\']+)["\'][^>]+(?:property|name|itemprop)\s*=\s*["\']{re.escape(name)}["\']',
+            ):
+                m = re.search(pat, html_text, re.IGNORECASE)
+                if m and m.group(1).strip():
+                    return _html.unescape(m.group(1).strip())
+        return None
+
+    out["title"] = _meta(["og:title", "twitter:title", "title"])
+    if not out["title"]:
+        m_title = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.IGNORECASE | re.DOTALL)
+        if m_title:
+            t_clean = re.sub(r"\s+", " ", _html.unescape(m_title.group(1))).strip()
+            if t_clean:
+                out["title"] = t_clean[:120]
+
+    thumb = _meta(["og:image", "og:image:secure_url", "twitter:image", "twitter:image:src", "thumbnailUrl"])
+    if thumb:
+        out["thumbnail"] = urljoin(base_url, thumb)
+
+    site_name = _meta(["og:site_name", "author", "twitter:creator"])
+    if site_name:
+        out["uploader"] = site_name[:60]
+    else:
+        try:
+            out["uploader"] = (urlparse(base_url).hostname or "").replace("www.", "")
+        except Exception:
+            pass
+
+    seen_media: List[str] = []
+
+    def _add_media(u: Optional[str]) -> None:
+        if not u:
+            return
+        s = _html.unescape(str(u)).replace("\\/", "/").strip()
+        if not s or s.startswith(("blob:", "data:", "javascript:")):
+            return
+        full = urljoin(base_url, s)
+        if not full.startswith(("http://", "https://")):
+            return
+        low = full.lower()
+        if any(bad in low for bad in ("doubleclick.net", "googlesyndication", "favicon", "sprite", ".svg", ".gif", ".jpg", ".jpeg", ".png", ".webp")):
+            return
+        if full not in seen_media:
+            seen_media.append(full)
+
+    for vp in ("og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream", "contentUrl"):
+        val = _meta([vp])
+        if val:
+            _add_media(val)
+
+    for m_src in re.finditer(r"""<(?:video|audio|source)\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", html_text, re.IGNORECASE):
+        _add_media(m_src.group(1))
+
+    unescaped_scripts = html_text.replace("\\/", "/").replace("\\u0026", "&").replace("\\u002F", "/")
+    for m_url in re.finditer(
+        r"""https?://[^\s"'<>\\]+\.(?:m3u8|mp4|webm|mpd|mp3|m4a)(?:\?[^\s"'<>\\]*)?""",
+        unescaped_scripts,
+        re.IGNORECASE,
+    ):
+        _add_media(m_url.group(0))
+
+    seen_embeds: List[str] = []
+    for m_ifr in re.finditer(r"""<iframe\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']""", html_text, re.IGNORECASE):
+        ifr_src = urljoin(base_url, _html.unescape(m_ifr.group(1).strip()))
+        low_ifr = ifr_src.lower()
+        if any(
+            k in low_ifr
+            for k in (
+                "youtube.com/embed/",
+                "youtube-nocookie.com/embed/",
+                "player.vimeo.com/",
+                "dailymotion.com/embed/",
+                "player.twitch.tv/",
+                "streamable.com/",
+                "ok.ru/videoembed/",
+                "facebook.com/plugins/video",
+                "/embed/",
+                "player",
+            )
+        ):
+            if ifr_src not in seen_embeds:
+                seen_embeds.append(ifr_src)
+
+    out["media_urls"] = seen_media
+    out["embed_urls"] = seen_embeds
+    if seen_media and all(re.search(r"\.(mp3|m4a|wav|flac|ogg|opus)(\?|#|$)", u, re.IGNORECASE) for u in seen_media):
+        out["kind"] = "audio"
+    return out
+
+
+def sniff_media_from_webpage(
+    url: str,
+    timeout: int = 18,
+    cookies_path: Optional[Path] = None,
+    use_playwright: bool = True,
+) -> Dict[str, Any]:
+    """Universal media sniffer: inspects any webpage via API/HTML and Playwright network/DOM interception to locate playable video or audio streams."""
+    norm_u = (url or "").strip()
+    empty_res: Dict[str, Any] = {
+        "found": False,
+        "media_urls": [],
+        "image_urls": [],
+        "kind": "video",
+        "title": None,
+        "thumbnail": None,
+        "uploader": None,
+        "referer": norm_u,
+    }
+    if not norm_u or not _is_safe_public_url(norm_u):
+        return empty_res
+
+    now = time.time()
+    cached = _SNIFF_CACHE.get(norm_u)
+    if cached and (now - cached[0]) < _SNIFF_CACHE_TTL:
+        return dict(cached[1])
+
+    platform_id = _detect_platform_id(norm_u)
+
+    # 1. X / Twitter fast API
+    if platform_id == "twitter":
+        tw = _sniff_twitter_fxapi(norm_u)
+        if tw.get("found"):
+            tw["referer"] = norm_u
+            _SNIFF_CACHE[norm_u] = (now, tw)
+            return dict(tw)
+
+    # 2. Fast HTTP / HTML scan
+    html_meta: Dict[str, Any] = {}
+    try:
+        import requests
+
+        headers = {
+            "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        with requests.get(norm_u, headers=headers, timeout=min(8, timeout), stream=True, allow_redirects=True) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            final_url = str(resp.url or norm_u)
+            if not _is_safe_public_url(final_url):
+                return empty_res
+
+            if any(ctype.startswith(p) for p in ("video/", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml")):
+                direct_name = Path(urlparse(final_url).path).stem or "Video"
+                res = {
+                    "found": True,
+                    "media_urls": [final_url],
+                    "image_urls": [],
+                    "kind": "video",
+                    "title": direct_name,
+                    "thumbnail": None,
+                    "uploader": (urlparse(final_url).hostname or "").replace("www.", ""),
+                    "referer": norm_u,
+                }
+                _SNIFF_CACHE[norm_u] = (now, res)
+                return dict(res)
+
+            if ctype.startswith("audio/"):
+                direct_name = Path(urlparse(final_url).path).stem or "Audio"
+                res = {
+                    "found": True,
+                    "media_urls": [final_url],
+                    "image_urls": [],
+                    "kind": "audio",
+                    "title": direct_name,
+                    "thumbnail": None,
+                    "uploader": (urlparse(final_url).hostname or "").replace("www.", ""),
+                    "referer": norm_u,
+                }
+                _SNIFF_CACHE[norm_u] = (now, res)
+                return dict(res)
+
+            if "html" in ctype or not ctype:
+                chunks = []
+                read_bytes = 0
+                for chunk in resp.iter_content(chunk_size=32768):
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    read_bytes += len(chunk)
+                    if read_bytes >= 1500000:
+                        break
+                raw_html = b"".join(chunks).decode(resp.encoding or "utf-8", errors="ignore")
+                html_meta = _extract_html_meta_and_media(raw_html, final_url)
+                discovered = list(html_meta.get("media_urls") or []) + list(html_meta.get("embed_urls") or [])
+                if discovered:
+                    res = {
+                        "found": True,
+                        "media_urls": discovered,
+                        "image_urls": [],
+                        "kind": html_meta.get("kind") or "video",
+                        "title": html_meta.get("title"),
+                        "thumbnail": html_meta.get("thumbnail"),
+                        "uploader": html_meta.get("uploader"),
+                        "referer": final_url,
+                    }
+                    _SNIFF_CACHE[norm_u] = (now, res)
+                    return dict(res)
+    except Exception:
+        pass
+
+    # 3. Playwright Headless Browser Network & DOM Sniffer
+    if not use_playwright:
+        return {
+            **empty_res,
+            "title": html_meta.get("title"),
+            "thumbnail": html_meta.get("thumbnail"),
+            "uploader": html_meta.get("uploader"),
+        }
+
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        from urllib.parse import urljoin
+
+        captured_streams: List[Tuple[int, str]] = []
+        seen_urls = set()
+
+        def _record_stream(u: str, content_type: str = "", content_length: int = 0) -> None:
+            s = (u or "").strip()
+            if not s or s.startswith(("blob:", "data:")) or s in seen_urls:
+                return
+            low = s.lower()
+            if any(skip in low for skip in ("doubleclick", "googlesyndication", "analytics", "favicon", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".css", ".js", ".woff")):
+                return
+            score = 10
+            if ".m3u8" in low or "mpegurl" in content_type:
+                score = 95 if ("master" in low or "playlist" in low or "index" in low) else 85
+            elif ".mpd" in low or "dash+xml" in content_type:
+                score = 88
+            elif ".mp4" in low or "video/mp4" in content_type:
+                if "bytestart=" in low or "range=" in low:
+                    s_clean = re.sub(r"[?&](?:bytestart|byteend|range)=[^&]+", "", s)
+                    s_clean = re.sub(r"\?&", "?", s_clean).rstrip("?&")
+                    if s_clean:
+                        s = s_clean
+                score = 92 if content_length > 500_000 else 80
+            elif ".webm" in low or "video/webm" in content_type:
+                score = 78
+            elif ".mp3" in low or ".m4a" in low or content_type.startswith("audio/"):
+                score = 75
+            elif low.endswith(".ts") or ".m4s" in low:
+                score = 15
+            elif content_type.startswith("video/"):
+                score = 70
+            else:
+                return
+
+            if s not in seen_urls:
+                seen_urls.add(s)
+                captured_streams.append((score, s))
+
+        with sync_playwright() as p_pw:
+            browser = p_pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+                locale="es-ES",
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+
+            def _on_response(resp: Any) -> None:
+                try:
+                    r_url = str(resp.url or "")
+                    headers_map = resp.headers or {}
+                    ct = str(headers_map.get("content-type") or "").lower()
+                    cl = 0
+                    try:
+                        cl = int(headers_map.get("content-length") or 0)
+                    except Exception:
+                        cl = 0
+                    if (
+                        ct.startswith(("video/", "audio/", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml"))
+                        or re.search(r"\.(m3u8|mp4|webm|mpd|mp3|m4a)(\?|#|$)", r_url, re.IGNORECASE)
+                    ):
+                        _record_stream(r_url, ct, cl)
+                except Exception:
+                    pass
+
+            page.on("response", _on_response)
+
+            try:
+                page.goto(norm_u, wait_until="domcontentloaded", timeout=max(8000, int(timeout * 1000)))
+            except Exception:
+                pass
+
+            page.wait_for_timeout(2200)
+
+            if not captured_streams:
+                try:
+                    page.evaluate(
+                        """() => {
+                            const v = document.querySelector('video');
+                            if (v) { try { v.muted = true; v.play(); } catch(e) {} }
+                            const playBtn = document.querySelector('[aria-label*="Play" i], [aria-label*="Reproducir" i], .vjs-big-play-button, [class*="play-button" i]');
+                            if (playBtn) { try { playBtn.click(); } catch(e) {} }
+                        }"""
+                    )
+                    page.wait_for_timeout(1800)
+                except Exception:
+                    pass
+
+            dom_info = {}
+            try:
+                dom_info = page.evaluate(
+                    """() => {
+                        const getMeta = (names) => {
+                            for (const n of names) {
+                                const el = document.querySelector(`meta[property="${n}"], meta[name="${n}"], meta[itemprop="${n}"]`);
+                                if (el && el.content) return el.content.trim();
+                            }
+                            return null;
+                        };
+                        const mediaSrcs = [];
+                        document.querySelectorAll('video, video source, audio, audio source').forEach(el => {
+                            const s = el.currentSrc || el.src || el.getAttribute('src');
+                            if (s && !s.startsWith('blob:') && !s.startsWith('data:')) mediaSrcs.push(s);
+                        });
+                        const ogVid = getMeta(['og:video:secure_url', 'og:video:url', 'og:video', 'twitter:player:stream']);
+                        if (ogVid) mediaSrcs.push(ogVid);
+                        const iframes = [];
+                        document.querySelectorAll('iframe').forEach(ifr => {
+                            if (ifr.src && ifr.src.startsWith('http')) iframes.push(ifr.src);
+                        });
+                        return {
+                            title: getMeta(['og:title', 'twitter:title']) || document.title || null,
+                            thumbnail: getMeta(['og:image', 'twitter:image']) || null,
+                            uploader: getMeta(['og:site_name', 'author']) || location.hostname.replace(/^www\\./, ''),
+                            mediaSrcs,
+                            iframes,
+                        };
+                    }"""
+                ) or {}
+            except Exception:
+                dom_info = {}
+
+            try:
+                context.close()
+                browser.close()
+            except Exception:
+                pass
+
+        for s_dom in dom_info.get("mediaSrcs") or []:
+            _record_stream(urljoin(norm_u, str(s_dom)), "video/mp4", 1_000_000)
+
+        sorted_streams = [u for _, u in sorted(captured_streams, key=lambda x: x[0], reverse=True)]
+
+        if not sorted_streams:
+            for ifr in dom_info.get("iframes") or []:
+                low_i = str(ifr).lower()
+                if any(k in low_i for k in ("youtube.com/embed/", "player.vimeo.com/", "dailymotion.com/embed/", "player.twitch.tv/", "streamable.com/")):
+                    sorted_streams.append(str(ifr))
+
+        final_title = dom_info.get("title") or html_meta.get("title")
+        final_thumb = dom_info.get("thumbnail") or html_meta.get("thumbnail")
+        final_uploader = dom_info.get("uploader") or html_meta.get("uploader")
+
+        if sorted_streams:
+            is_audio_only = all(re.search(r"\.(mp3|m4a|wav|flac|ogg|opus)(\?|#|$)", u, re.IGNORECASE) for u in sorted_streams)
+            res = {
+                "found": True,
+                "media_urls": sorted_streams,
+                "image_urls": [],
+                "kind": "audio" if is_audio_only else "video",
+                "title": final_title,
+                "thumbnail": final_thumb,
+                "uploader": final_uploader,
+                "referer": norm_u,
+            }
+            _SNIFF_CACHE[norm_u] = (now, res)
+            return dict(res)
+
+        return {
+            **empty_res,
+            "title": final_title,
+            "thumbnail": final_thumb,
+            "uploader": final_uploader,
+        }
+    except Exception as exc:
+        print(f"[SNIFFER] Playwright sniff failed for {norm_u}: {exc}", flush=True)
+        return {
+            **empty_res,
+            "title": html_meta.get("title"),
+            "thumbnail": html_meta.get("thumbnail"),
+            "uploader": html_meta.get("uploader"),
+        }
+
+
 def fetch_fast_metadata(url: str) -> Dict[str, Any]:
-    """Extract quick title, thumbnail and author/channel using oEmbed or URL pattern."""
+    """Extract quick title, thumbnail and author/channel using oEmbed, fxtwitter API, or OpenGraph tags."""
     out: Dict[str, Any] = {"title": None, "thumbnail": None, "creator": None, "platform": None}
     if not url:
         return out
 
     try:
         import requests
-        import re
 
         p = urlparse(url)
         host = (p.netloc or "").lower()
         path = p.path or ""
+        out["platform"] = _detect_platform_id(url)
 
         # 1. YouTube
-        if "youtube.com" in host or "youtu.be" in host:
-            out["platform"] = "youtube"
+        if out["platform"] == "youtube":
             vid = None
             if "youtu.be" in host:
                 vid = path.strip("/").split("/")[0] if path.strip("/") else None
@@ -3257,7 +3810,6 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
             if vid:
                 out["thumbnail"] = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
 
-            # Fast oEmbed query
             norm_yt = f"https://www.youtube.com/watch?v={vid}" if vid else url
             try:
                 r = requests.get(
@@ -3273,10 +3825,10 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
                         out["thumbnail"] = data.get("thumbnail_url")
             except Exception:
                 pass
+            return out
 
         # 2. TikTok
-        elif "tiktok.com" in host:
-            out["platform"] = "tiktok"
+        if out["platform"] == "tiktok":
             try:
                 r = requests.get(
                     f"https://www.tiktok.com/oembed?url={url}",
@@ -3291,10 +3843,10 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
                         out["thumbnail"] = data.get("thumbnail_url")
             except Exception:
                 pass
+            return out
 
         # 3. SoundCloud
-        elif "soundcloud.com" in host:
-            out["platform"] = "soundcloud"
+        if out["platform"] == "soundcloud":
             try:
                 r = requests.get(
                     f"https://soundcloud.com/oembed?url={url}&format=json",
@@ -3309,10 +3861,10 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
                         out["thumbnail"] = data.get("thumbnail_url")
             except Exception:
                 pass
+            return out
 
         # 4. Vimeo
-        elif "vimeo.com" in host:
-            out["platform"] = "vimeo"
+        if out["platform"] == "vimeo":
             try:
                 r = requests.get(
                     f"https://vimeo.com/api/oembed.json?url={url}",
@@ -3325,6 +3877,47 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
                     out["creator"] = data.get("author_name")
                     if data.get("thumbnail_url"):
                         out["thumbnail"] = data.get("thumbnail_url")
+            except Exception:
+                pass
+            return out
+
+        # 5. X / Twitter via fxtwitter JSON API
+        if out["platform"] == "twitter":
+            tw = _sniff_twitter_fxapi(url, timeout=3.0)
+            if tw.get("title"):
+                out["title"] = tw["title"]
+            if tw.get("thumbnail"):
+                out["thumbnail"] = tw["thumbnail"]
+            if tw.get("uploader"):
+                out["creator"] = tw["uploader"]
+            if out["title"] or out["thumbnail"]:
+                return out
+
+        # 6. Generic OpenGraph / HTML metadata for any public URL
+        if _is_safe_public_url(url):
+            try:
+                with requests.get(
+                    url,
+                    timeout=3.0,
+                    headers={"User-Agent": _DEFAULT_UA, "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"},
+                    stream=True,
+                ) as r:
+                    ctype = (r.headers.get("Content-Type") or "").lower()
+                    if "html" in ctype:
+                        chunks = []
+                        total = 0
+                        for chunk in r.iter_content(chunk_size=16384):
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            total += len(chunk)
+                            if total >= 250000:
+                                break
+                        raw_html = b"".join(chunks).decode(r.encoding or "utf-8", errors="ignore")
+                        parsed_meta = _extract_html_meta_and_media(raw_html, str(r.url or url))
+                        out["title"] = parsed_meta.get("title")
+                        out["thumbnail"] = parsed_meta.get("thumbnail")
+                        out["creator"] = parsed_meta.get("uploader")
             except Exception:
                 pass
 
@@ -3450,13 +4043,7 @@ def probe_media_capabilities(
     url = _normalize_url(urls[0])
     host = (urlparse(url).netloc or "").lower()
     path = (urlparse(url).path or "").lower()
-    platform = "other"
-    if "youtube.com" in host or "youtu.be" in host:
-        platform = "youtube"
-    elif "tiktok.com" in host:
-        platform = "tiktok"
-    elif "instagram.com" in host:
-        platform = "instagram"
+    platform = _detect_platform_id(url)
 
     # Fast detection for YouTube (under 200ms with real title and thumbnail)
     if platform == "youtube":
@@ -3670,10 +4257,38 @@ def probe_media_capabilities(
                 if not summary or summary == "Sin detección":
                     summary = "TikTok: compatibilidad mixta"
         else:
-            supports_video, supports_audio, supports_image = True, True, False
-            detected_kind = "video"
-            if not summary or summary == "Sin detección":
-                summary = f"Fallback por error de detección: {type(e).__name__}"
+            sniffed = sniff_media_from_webpage(url, timeout=18, cookies_path=cookies_path)
+            if sniffed.get("title") and not title:
+                title = sniffed["title"]
+                summary = title
+            if sniffed.get("thumbnail") and not thumbnail:
+                thumbnail = sniffed["thumbnail"]
+            if sniffed.get("uploader") and not uploader:
+                uploader = sniffed["uploader"]
+
+            if sniffed.get("found"):
+                skind = sniffed.get("kind") or "video"
+                if skind == "imagen":
+                    supports_video, supports_audio, supports_image = False, False, True
+                    detected_kind = "imagen"
+                elif skind == "audio":
+                    supports_video, supports_audio, supports_image = False, True, False
+                    detected_kind = "audio"
+                else:
+                    supports_video, supports_audio, supports_image = True, True, False
+                    detected_kind = "video"
+                if not summary or summary == "Sin detección":
+                    summary = title or "Contenido multimedia detectado en la página"
+            elif platform == "soundcloud":
+                supports_video, supports_audio, supports_image = False, True, False
+                detected_kind = "audio"
+                if not summary or summary == "Sin detección":
+                    summary = title or "SoundCloud: audio detectado"
+            else:
+                supports_video, supports_audio, supports_image = True, True, False
+                detected_kind = "video"
+                if not summary or summary == "Sin detección":
+                    summary = title or f"Enlace web ({(host or 'sitio').replace('www.', '')})"
 
     allowed_kinds: List[str] = []
     if supports_audio:
@@ -4227,6 +4842,88 @@ def _try_tiktok_video_playwright_first(
 
 
 # -------------------- download com yt-dlp --------------------
+def _direct_http_media_download(
+    media_url: str,
+    *,
+    out_dir: Path,
+    title: Optional[str] = None,
+    referer: Optional[str] = None,
+    kind: str = "video",
+    audio_format: str = "mp3",
+    container: str = "mp4",
+) -> Optional[Path]:
+    """Download a direct video/audio file over HTTP and optionally convert to audio via ffmpeg."""
+    if not media_url or not _is_safe_public_url(media_url):
+        return None
+    try:
+        import requests
+        import subprocess
+
+        headers = {
+            "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+            "Accept": "*/*",
+        }
+        if referer:
+            headers["Referer"] = referer
+
+        safe_stem = re.sub(r"""[\\/:*?"<>|\r\n\t+]+""", " ", (title or "").strip()).strip(" ._")[:80]
+        if not safe_stem:
+            safe_stem = Path(urlparse(media_url).path).stem or f"media_{os.urandom(3).hex()}"
+
+        ext = _guess_ext_from_url(media_url, default="mp4" if kind == "video" else "mp3")
+        if ext not in ("mp4", "webm", "mkv", "mov", "mp3", "m4a", "wav", "ogg", "opus", "flac"):
+            ext = "mp4" if kind == "video" else "mp3"
+
+        raw_dest = (out_dir / f"{safe_stem}.{ext}").resolve()
+        if raw_dest.exists():
+            raw_dest = (out_dir / f"{safe_stem}_{os.urandom(2).hex()}.{ext}").resolve()
+
+        with requests.get(media_url, headers=headers, timeout=45, stream=True) as r:
+            if r.status_code >= 400:
+                return None
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "html" in ctype or "json" in ctype:
+                return None
+            total = 0
+            with open(raw_dest, "wb") as f:
+                for chunk in r.iter_content(chunk_size=65536):
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total += len(chunk)
+                    if total > 1500 * 1024 * 1024:  # 1.5 GB safety cap
+                        break
+
+        if not raw_dest.exists() or raw_dest.stat().st_size < 1024:
+            try:
+                raw_dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+
+        # If user requested audio but stream was video, extract audio with ffmpeg
+        if kind == "audio" and ext in ("mp4", "webm", "mkv", "mov"):
+            target_aext = (audio_format or "mp3").lower()
+            audio_dest = raw_dest.with_suffix(f".{target_aext}")
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(raw_dest), "-vn", "-ab", "192k", str(audio_dest)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                    check=True,
+                )
+                if audio_dest.exists() and audio_dest.stat().st_size > 512:
+                    raw_dest.unlink(missing_ok=True)
+                    return audio_dest
+            except Exception:
+                pass
+
+        return raw_dest
+    except Exception:
+        return None
+
+
 def download_with_ytdlp(
     urls: List[str],
     kind: str,
@@ -4575,7 +5272,58 @@ def download_with_ytdlp(
                     except Exception as e:
                         print(f"[TIKTOK-PW] Error inesperado, usando fallback yt-dlp: {type(e).__name__}", flush=True)
 
+                    before_single = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
                     err = _run_download(ydl, url)
+                    after_single = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
+
+                    # Universal Web Sniffer Fallback if yt-dlp failed or produced 0 files
+                    if err or len(after_single - before_single) == 0:
+                        try:
+                            print(f"[SNIFFER] yt-dlp direct failed for {url}, running universal webpage sniffer...", flush=True)
+                            sniffed = sniff_media_from_webpage(url, timeout=22, cookies_path=cookies_path)
+                            media_candidates = list(sniffed.get("media_urls") or [])
+                            if media_candidates:
+                                orig_outtmpl = ydl.params.get("outtmpl")
+                                orig_headers = dict(ydl.params.get("http_headers") or {})
+                                sniff_title = (sniffed.get("title") or "").strip()
+                                if sniff_title:
+                                    safe_stem = re.sub(r"""[\\/:*?"<>|\r\n\t+]+""", " ", sniff_title).strip(" ._")[:80]
+                                    if safe_stem:
+                                        tmpl_str = str(out_dir / f"{safe_stem}.%(ext)s")
+                                        ydl.params["outtmpl"] = {"default": tmpl_str} if isinstance(orig_outtmpl, dict) else tmpl_str
+                                new_headers = dict(orig_headers)
+                                new_headers["Referer"] = str(sniffed.get("referer") or url)
+                                ydl.params["http_headers"] = new_headers
+
+                                for cand_u in media_candidates[:3]:
+                                    if not _is_safe_public_url(cand_u):
+                                        continue
+                                    print(f"[SNIFFER] Trying discovered media stream: {cand_u}", flush=True)
+                                    sub_err = _run_download(ydl, cand_u)
+                                    now_files = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
+                                    if len(now_files - before_single) > 0:
+                                        err = None
+                                        break
+                                    # Direct HTTP download fallback for raw .mp4/.webm/.mp3 streams
+                                    dl_path = _direct_http_media_download(
+                                        cand_u,
+                                        out_dir=out_dir,
+                                        title=sniff_title,
+                                        referer=str(sniffed.get("referer") or url),
+                                        kind=kind,
+                                        audio_format=audio_format,
+                                        container=container,
+                                    )
+                                    if dl_path and dl_path.exists():
+                                        err = None
+                                        break
+
+                                if orig_outtmpl is not None:
+                                    ydl.params["outtmpl"] = orig_outtmpl
+                                ydl.params["http_headers"] = orig_headers
+                        except Exception as sniff_exc:
+                            print(f"[SNIFFER] Fallback error: {sniff_exc}", flush=True)
+
                     if err:
                         fails.append((url, err))
 

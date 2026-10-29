@@ -78,7 +78,7 @@ export default function HomeView({
               id="url-input"
               value={urlInput}
               onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="Pega tu enlace aquí (TikTok, Instagram, YouTube, SoundCloud...)"
+              placeholder="Pega tu enlace aquí (Redes sociales o cualquier página web con video...)"
               type="text"
             />
 
@@ -131,7 +131,7 @@ export default function HomeView({
             Plataformas compatibles:
           </span>
           <div className="flex flex-wrap items-center justify-center gap-2 max-w-xl">
-            {['TikTok', 'Instagram', 'YouTube', 'SoundCloud', 'X / Twitter', 'Facebook', 'Threads'].map(
+            {['TikTok', 'Instagram', 'YouTube', 'SoundCloud', 'X / Twitter', 'Facebook', 'Threads', 'Reddit', 'Cualquier Web'].map(
               (p) => (
                 <div
                   key={p}

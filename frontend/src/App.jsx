@@ -23,6 +23,12 @@ const PLATFORM_LABELS = {
   twitter: 'X / Twitter',
   x: 'X / Twitter',
   facebook: 'Facebook',
+  threads: 'Threads',
+  reddit: 'Reddit',
+  twitch: 'Twitch',
+  vimeo: 'Vimeo',
+  pinterest: 'Pinterest',
+  dailymotion: 'Dailymotion',
   direct: 'Enlace directo',
   other: 'Web',
 };

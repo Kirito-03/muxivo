@@ -1138,12 +1138,25 @@ def api_detect():
             all_modes = ["audio", "video", "image"]
             disable_modes = [m for m in all_modes if m not in allowed_kinds]
 
+        safe_thumb = thumbnail
+        if safe_thumb and safe_thumb.startswith(("http://", "https://")):
+            try:
+                from urllib.parse import urlparse as _up, quote as _uq
+                th_host = (_up(safe_thumb).netloc or "").lower()
+                if (
+                    th_host.endswith(("tiktokcdn.com", "tiktokcdn-us.com", "muscdn.com", "cdninstagram.com", "fbcdn.net"))
+                    or ".tiktokcdn" in th_host
+                ):
+                    safe_thumb = f"/api/thumb?url={_uq(safe_thumb, safe='')}"
+            except Exception:
+                pass
+
         out: Dict[str, Any] = {
             "platform": platform,
             "resolved_url": resolved_url,
             "summary": summary,
             "title": title or summary,
-            "thumbnail": thumbnail,
+            "thumbnail": safe_thumb,
             "creator": creator,
             "detected_kind": detected_kind,
             "allowed_kinds": allowed_kinds,
@@ -1557,7 +1570,26 @@ def api_download():
             return "Instagram"
         if "youtube.com" in host or "youtu.be" in host:
             return "YouTube"
-        return "la plataforma"
+        if "x.com" in host or "twitter.com" in host or host == "t.co":
+            return "X / Twitter"
+        if "facebook.com" in host or "fb.watch" in host or "fb.com" in host:
+            return "Facebook"
+        if "threads.net" in host or "threads.com" in host:
+            return "Threads"
+        if "soundcloud.com" in host or "snd.sc" in host:
+            return "SoundCloud"
+        if "reddit.com" in host or "redd.it" in host:
+            return "Reddit"
+        if "twitch.tv" in host:
+            return "Twitch"
+        if "vimeo.com" in host:
+            return "Vimeo"
+        if "pinterest." in host or "pin.it" in host:
+            return "Pinterest"
+        if "dailymotion.com" in host or "dai.ly" in host:
+            return "Dailymotion"
+        clean_h = host.replace("www.", "")
+        return clean_h if clean_h else "Web"
 
     def _friendly_error(url: str, exc: Exception, has_cookies: bool) -> str:
         msg = str(exc or "")
