@@ -1020,11 +1020,34 @@ def api_history():
 
         ok_n = int(entry.get("ok") or 0)
         fail_n = int(entry.get("fail") or 0)
+
+        # Smart title recovery even for old legacy history items
+        ent_title = (entry.get("title") or entry.get("label") or "").strip()
+        if (not ent_title or "—" in ent_title) and files_out:
+            first_fname = files_out[0].get("name") or ""
+            if first_fname:
+                ent_title = Path(first_fname).stem.replace("_", " ")
+
+        if not ent_title:
+            ent_title = "Archivo descargado"
+
+        ent_thumb = entry.get("thumbnail") or None
+        ent_format = entry.get("format") or f"{str(entry.get('kind') or 'Media').capitalize()}"
+        ent_size = entry.get("size") or (f"{ok_n} archivo(s)" if ok_n else "")
+
         items.append(
             {
+                "id": entry.get("id") or f"hist_{entry.get('ts')}_{len(items)}",
                 "ts": entry.get("ts"),
-                "kind": entry.get("kind"),
-                "label": entry.get("label") or "",
+                "url": entry.get("url") or "",
+                "kind": entry.get("kind") or "video",
+                "label": entry.get("label") or ent_title,
+                "title": ent_title,
+                "thumbnail": ent_thumb,
+                "creator": entry.get("creator") or None,
+                "platform": entry.get("platform") or None,
+                "format": ent_format,
+                "size": ent_size,
                 "ok": ok_n,
                 "fail": fail_n,
                 "total": ok_n + fail_n,
@@ -1464,6 +1487,11 @@ def api_download():
     fmt = (payload.get("format") or "").strip().lower()
     detail = (payload.get("detail") or "").strip()
     image_urls = payload.get("image_urls")
+    title = (payload.get("title") or "").strip()
+    thumbnail = (payload.get("thumbnail") or "").strip()
+    creator = (payload.get("creator") or "").strip()
+    platform = (payload.get("platform") or "").strip()
+    format_label = (payload.get("format_label") or "").strip()
 
     ip = (request.headers.get("X-Forwarded-For", "") or "").split(",")[0].strip() or request.remote_addr or ""
     if ip and not _rate_limit_ok(ip):
@@ -1763,9 +1791,17 @@ def api_download():
                     session_lbl = _session_label(first_url_for_error, requested_kind, ok_count)
                     _append_history(
                         {
+                            "id": f"hist_{int(time.time()*1000)}_{os.urandom(3).hex()}",
                             "ts": int(time.time()),
+                            "url": first_url_for_error,
                             "kind": requested_kind,
                             "label": session_lbl,
+                            "title": title or session_lbl,
+                            "thumbnail": thumbnail or None,
+                            "creator": creator or None,
+                            "platform": platform or _platform_for_url(first_url_for_error),
+                            "format": format_label or f"{requested_kind.capitalize()}",
+                            "size": f"{ok_count} archivo(s)",
                             "urls": 1,
                             "ok": ok_count,
                             "fail": len(worker_failures),
@@ -1825,19 +1861,19 @@ def api_download():
         except Exception:
             pass
 
-    # Generar ZIP con nombre limpio si hay más de 1 archivo
+    # Generar ZIP con nombre limpio SOLO si es imagen y hay más de 1 archivo (galería)
     clean_zip_name = _clean_zip_name(first_url_for_error, len(generated))
     zip_url: Optional[str] = None
     zip_obj: Optional[Dict[str, Any]] = None
     zip_relpath_str: Optional[str] = None
 
-    if zip_path:
+    # ZIP solo para galerías de imágenes con más de 1 imagen.
+    # Para video y audio NUNCA se genera ni se ofrece ZIP.
+    if zip_path and requested_kind == "image" and len(generated) > 1:
         try:
             original_zip = Path(zip_path).resolve()
             if original_zip.exists():
-                # Renombrar el ZIP al nombre limpio
                 clean_zip_dest = original_zip.parent / clean_zip_name
-                # Evitar colisión
                 if clean_zip_dest.exists() and clean_zip_dest != original_zip:
                     clean_zip_dest = original_zip.parent / f"{clean_zip_dest.stem}_{os.urandom(3).hex()}.zip"
                 if original_zip != clean_zip_dest:
@@ -1845,12 +1881,12 @@ def api_download():
                 final_zip = clean_zip_dest
             else:
                 final_zip = original_zip
+            zip_url = _rel_to_url(final_zip)
+            zip_relpath_str = _path_to_relstr(final_zip)
+            zip_obj = {"name": final_zip.name, "url": zip_url, "kind": "zip"}
         except Exception:
-            final_zip = Path(zip_path).resolve()
-
-        zip_url = _rel_to_url(final_zip)
-        zip_relpath_str = _path_to_relstr(final_zip)
-        zip_obj = {"name": final_zip.name, "url": zip_url, "kind": "zip"}
+            zip_obj = None
+            zip_url = None
 
     ok_count = len(generated)
     fail_count = len(failures or [])
@@ -1965,16 +2001,63 @@ def api_download():
 
     session_lbl = _session_label(first_url_for_error, requested_kind, ok_count)
 
+    # Calcular tamaño total formateado
+    total_size_bytes = sum(p.stat().st_size for p in generated if p.exists())
+    if total_size_bytes >= 1024 * 1024 * 1024:
+        total_size_str = f"{total_size_bytes / (1024 * 1024 * 1024):.1f} GB"
+    elif total_size_bytes >= 1024 * 1024:
+        total_size_str = f"{total_size_bytes / (1024 * 1024):.1f} MB"
+    elif total_size_bytes >= 1024:
+        total_size_str = f"{total_size_bytes / 1024:.0f} KB"
+    else:
+        total_size_str = f"{total_size_bytes} B" if total_size_bytes else ""
+
+    # Determinar título final
+    if not title:
+        try:
+            from media_tools import fetch_fast_metadata
+            fast_m = fetch_fast_metadata(first_url_for_error)
+            if fast_m.get("title"):
+                title = fast_m["title"]
+            if not thumbnail and fast_m.get("thumbnail"):
+                thumbnail = fast_m["thumbnail"]
+            if not creator and fast_m.get("creator"):
+                creator = fast_m["creator"]
+        except Exception:
+            pass
+
+    if not title and generated:
+        title = _clean_filename(generated[0].stem).replace("_", " ")
+
+    if not title:
+        title = session_lbl
+
+    if not format_label:
+        if requested_kind == "video":
+            format_label = f"Video {fmt.upper() or 'MP4'}{f' • {detail}p' if detail else ''}"
+        elif requested_kind == "audio":
+            format_label = f"Audio {fmt.upper() or 'MP3'}{f' • {detail} kbps' if detail else ''}"
+        else:
+            format_label = f"Galería {fmt.upper() or 'JPG'} • {ok_count} foto(s)"
+
     _append_history(
         {
+            "id": f"hist_{int(time.time()*1000)}_{os.urandom(3).hex()}",
             "ts": int(time.time()),
+            "url": first_url_for_error,
             "kind": requested_kind,
             "label": session_lbl,
+            "title": title,
+            "thumbnail": thumbnail or None,
+            "creator": creator or None,
+            "platform": platform or _platform_for_url(first_url_for_error),
+            "format": format_label,
+            "size": total_size_str,
             "urls": len([l for l in filtered.splitlines() if l.strip()]),
             "ok": ok_count,
             "fail": fail_count,
-            "zip": str(zip_path) if zip_path else None,
-            "zip_relpath": zip_relpath_str,
+            "zip": str(zip_path) if zip_obj else None,
+            "zip_relpath": zip_relpath_str if zip_obj else None,
             "files": history_files,
             "failures": failures_out,
         },
@@ -1990,6 +2073,8 @@ def api_download():
             "success": ok_count,
             "failed": fail_count,
             "label": session_lbl,
+            "title": title,
+            "thumbnail": thumbnail or None,
             "zip": zip_obj,
             "files": files,
             "failures": failures_out,

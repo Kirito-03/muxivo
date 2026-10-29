@@ -45,6 +45,11 @@ export default function DownloadingView({ downloadItem, onCancel, onComplete }) 
       detail: downloadItem.detail || '',
       sessionId: downloadItem.sessionId || '',
       imageUrls: downloadItem.imageUrls || undefined,
+      title: downloadItem.title || '',
+      thumbnail: downloadItem.thumbnail || '',
+      creator: downloadItem.creator || '',
+      platform: downloadItem.platform || '',
+      formatLabel: downloadItem.format || '',
     })
       .then((result) => {
         if (cancelled) return;

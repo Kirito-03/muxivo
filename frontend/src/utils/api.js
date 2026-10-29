@@ -31,13 +31,30 @@ export async function getOptions(url, kind = 'video') {
  * Body: { raw_input, kind, format, detail, session_id, image_urls? }
  * Returns: { ok, tone, message, total, success, failed, label, files, zip, failures }
  */
-export async function startDownload({ rawInput, kind, format, detail, sessionId, imageUrls }) {
+export async function startDownload({
+  rawInput,
+  kind,
+  format,
+  detail,
+  sessionId,
+  imageUrls,
+  title,
+  thumbnail,
+  creator,
+  platform,
+  formatLabel,
+}) {
   const body = {
     raw_input: rawInput,
     kind,
     format: format || '',
     detail: detail || '',
     session_id: sessionId || '',
+    title: title || '',
+    thumbnail: thumbnail || '',
+    creator: creator || '',
+    platform: platform || '',
+    format_label: formatLabel || '',
   };
   if (imageUrls) body.image_urls = imageUrls;
 

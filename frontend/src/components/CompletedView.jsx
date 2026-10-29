@@ -65,7 +65,8 @@ export default function CompletedView({ completedItem, onNewDownload }) {
 
   // Collect all downloadable files from the result
   const files = completedItem?.files || [];
-  const zip = completedItem?.zip;
+  const showZip = Boolean(completedItem?.type === 'image' && completedItem?.zip);
+  const zip = showZip ? completedItem?.zip : null;
   const failures = completedItem?.failures || [];
   const successCount = completedItem?.success || files.length || 0;
   const hasFiles = files.length > 0 || zip;
@@ -137,13 +138,13 @@ export default function CompletedView({ completedItem, onNewDownload }) {
           <div className="flex items-center gap-2 mb-1">
             <span className="material-symbols-outlined text-[#5fd0c8] text-[20px]">download</span>
             <h2 className="text-sm font-bold text-[#dee3e7]">
-              Archivos disponibles ({files.length + (zip ? 1 : 0)})
+              Archivos disponibles ({files.length + (showZip ? 1 : 0)})
             </h2>
           </div>
 
           <div className="flex flex-col gap-2">
-            {/* ZIP first if available */}
-            {zip && <FileCard file={zip} />}
+            {/* ZIP only for galleries */}
+            {showZip && <FileCard file={zip} />}
             {/* Individual files */}
             {files.map((f, i) => (
               <FileCard key={i} file={f} />
@@ -174,9 +175,24 @@ export default function CompletedView({ completedItem, onNewDownload }) {
 
       {/* 4. Action Buttons */}
       <div className="w-full flex flex-col gap-3">
+        {files.length === 1 && !showZip ? (
+          <a
+            href={files[0].url}
+            download={files[0].name}
+            className="w-full h-14 rounded-2xl bg-[#5fd0c8] hover:bg-[#7FE0D8] active:bg-[#46B8B0] text-[#041014] text-base font-bold flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(95,208,200,0.35)] active:scale-[0.98] transition-all cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[24px]">download</span>
+            <span>Descargar {completedItem?.type === 'audio' ? 'Audio' : 'Video'}</span>
+          </a>
+        ) : null}
+
         <button
           onClick={onNewDownload}
-          className="w-full h-14 rounded-2xl bg-[#5fd0c8] hover:bg-[#7FE0D8] active:bg-[#46B8B0] text-[#041014] text-base font-bold flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(95,208,200,0.35)] active:scale-[0.98] transition-all cursor-pointer"
+          className={`w-full h-14 rounded-2xl ${
+            files.length === 1 && !showZip
+              ? 'bg-[#252b2e] hover:bg-[#303639] border border-[#3d4948]/60 text-[#dee3e7]'
+              : 'bg-[#5fd0c8] hover:bg-[#7FE0D8] active:bg-[#46B8B0] text-[#041014] shadow-[0_0_20px_rgba(95,208,200,0.35)]'
+          } text-base font-bold flex items-center justify-center gap-2.5 active:scale-[0.98] transition-all cursor-pointer`}
           type="button"
         >
           <span className="material-symbols-outlined text-[24px]">add_link</span>

@@ -4713,6 +4713,11 @@ def process_links(
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     base_name = f"{prefix}_{kind}_{spec}_{n}x_{timestamp}"
 
-    zip_base = out_dir.parent / base_name
-    zip_path = shutil.make_archive(str(zip_base), "zip", out_dir)
-    return zip_path, generated, failures
+    # Only create a ZIP archive for galleries with multiple images (n > 1).
+    # Single videos, audios, and single photos are served directly as clean files without ZIP.
+    zip_path: Optional[str] = None
+    if (kind in ("imagen", "image")) and n > 1:
+        zip_base = out_dir.parent / base_name
+        zip_path = shutil.make_archive(str(zip_base), "zip", out_dir)
+
+    return zip_path or "", generated, failures

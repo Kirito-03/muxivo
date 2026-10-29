@@ -159,36 +159,78 @@ export default function HomeView({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-              {recentDownloads.slice(0, 4).map((item) => (
-                <div
-                  key={item.id}
-                  className="p-2.5 rounded-xl bg-[#171c20] hover:bg-[#1b2024] border border-[#1E3640]/70 flex items-center justify-between gap-3 transition-colors group"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <img
-                      src={item.thumbnail}
-                      alt={item.title}
-                      className="w-10 h-10 rounded-lg object-cover bg-[#090f12] shrink-0"
-                    />
-                    <div className="min-w-0 flex flex-col">
-                      <span className="text-xs font-semibold text-[#dee3e7] truncate group-hover:text-[#5fd0c8] transition-colors">
-                        {item.title}
-                      </span>
-                      <span className="text-[11px] font-mono text-[#7FA3A6] truncate">
-                        {item.format} • {item.size}
-                      </span>
-                    </div>
-                  </div>
+              {recentDownloads.slice(0, 4).map((item, idx) => {
+                const itemTitle = item.title || item.label || item.name || "Archivo multimedia";
+                const itemFormat = item.format || (item.kind ? item.kind.toUpperCase() : "ARCHIVO");
+                const itemSize = item.size || (item.ok ? `${item.ok} archivo(s)` : "");
+                const itemSubtitle = [itemFormat, itemSize].filter(Boolean).join(" • ");
+                const directFile = item.files && item.files[0];
+                const kindIcon = item.kind === "audio" ? "audiotrack" : item.kind === "image" ? "image" : "smart_display";
 
-                  <button
-                    onClick={() => onRedownload(item)}
-                    className="w-8 h-8 rounded-lg bg-[#252b2e] hover:bg-[#5fd0c8] hover:text-[#041014] text-[#dee3e7] flex items-center justify-center shrink-0 transition-colors"
-                    title="Volver a procesar"
+                return (
+                  <div
+                    key={item.id || item.ts || idx}
+                    className="p-2.5 rounded-xl bg-[#171c20] hover:bg-[#1b2024] border border-[#1E3640]/70 flex items-center justify-between gap-3 transition-colors group"
                   >
-                    <span className="material-symbols-outlined text-[16px]">download</span>
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#090f12] border border-[#1E3640]/60 shrink-0 flex items-center justify-center relative">
+                        {item.thumbnail ? (
+                          <img
+                            src={item.thumbnail}
+                            alt={itemTitle}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                              const fb = e.currentTarget.parentElement && e.currentTarget.parentElement.querySelector(".thumb-fallback");
+                              if (fb) fb.style.display = "flex";
+                            }}
+                          />
+                        ) : null}
+                        <div
+                          className={`thumb-fallback w-full h-full items-center justify-center text-[#5fd0c8] bg-[#252b2e] ${
+                            item.thumbnail ? "hidden" : "flex"
+                          }`}
+                        >
+                          <span className="material-symbols-outlined text-[20px]">{kindIcon}</span>
+                        </div>
+                      </div>
+
+                      <div className="min-w-0 flex flex-col flex-1">
+                        <span
+                          className="text-xs font-semibold text-[#dee3e7] truncate group-hover:text-[#5fd0c8] transition-colors"
+                          title={itemTitle}
+                        >
+                          {itemTitle}
+                        </span>
+                        <span className="text-[11px] font-mono text-[#7FA3A6] truncate">
+                          {itemSubtitle}
+                        </span>
+                      </div>
+                    </div>
+
+                    {directFile && directFile.url ? (
+                      <a
+                        href={directFile.url}
+                        download={directFile.name || itemTitle}
+                        className="w-8 h-8 rounded-lg bg-[#252b2e] hover:bg-[#5fd0c8] hover:text-[#041014] text-[#dee3e7] flex items-center justify-center shrink-0 transition-colors"
+                        title={`Descargar ${directFile.name || itemTitle}`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span className="material-symbols-outlined text-[16px]">download</span>
+                      </a>
+                    ) : (
+                      <button
+                        onClick={() => onRedownload(item)}
+                        className="w-8 h-8 rounded-lg bg-[#252b2e] hover:bg-[#5fd0c8] hover:text-[#041014] text-[#dee3e7] flex items-center justify-center shrink-0 transition-colors"
+                        title="Volver a procesar"
+                        type="button"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">download</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

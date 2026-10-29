@@ -148,6 +148,8 @@ export default function HistoryView({ history = [], loading = false, onClearHist
           filtered.map((item, i) => {
             const icon = KIND_ICONS[item.kind] || 'download';
             const timeLabel = formatTimestamp(item.ts);
+            const displayTitle = item.title || item.label || item.name || 'Archivo multimedia';
+            const displayMeta = [item.format, item.size].filter(Boolean).join(' • ');
 
             return (
               <div
@@ -155,29 +157,53 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                 className="flex items-center justify-between p-3.5 sm:p-4 bg-[#1b2024] border border-[#1E3640] rounded-xl hover:bg-[#252b2e] hover:border-[#5fd0c8]/40 transition-all shadow-sm gap-3 sm:gap-4 group"
               >
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                  {/* Kind Icon */}
-                  <div className="w-12 h-12 rounded-xl bg-[#252b2e] border border-[#3d4948]/60 flex items-center justify-center shrink-0 text-[#5fd0c8]">
-                    <span className="material-symbols-outlined text-[22px]">{icon}</span>
-                  </div>
+                  {/* Thumbnail or Kind Icon */}
+                  {item.thumbnail ? (
+                    <div className="w-12 h-12 rounded-xl bg-[#252b2e] border border-[#3d4948]/60 overflow-hidden shrink-0 relative flex items-center justify-center">
+                      <img
+                        src={item.thumbnail}
+                        alt=""
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          if (e.currentTarget.nextElementSibling) {
+                            e.currentTarget.nextElementSibling.style.display = 'flex';
+                          }
+                        }}
+                      />
+                      <div className="w-full h-full hidden items-center justify-center text-[#5fd0c8]">
+                        <span className="material-symbols-outlined text-[22px]">{icon}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-[#252b2e] border border-[#3d4948]/60 flex items-center justify-center shrink-0 text-[#5fd0c8]">
+                      <span className="material-symbols-outlined text-[22px]">{icon}</span>
+                    </div>
+                  )}
 
                   {/* Details */}
                   <div className="flex flex-col min-w-0">
                     <span className="text-sm font-bold text-[#dee3e7] truncate group-hover:text-[#5fd0c8] transition-colors">
-                      {item.label || '(sin título)'}
+                      {displayTitle}
                     </span>
                     <div className="flex flex-wrap items-center gap-2 mt-1">
                       <span className="px-2 py-0.5 rounded-full bg-[#252b2e] border border-[#3d4948]/60 text-[#7dece4] text-[11px] font-mono font-medium">
                         {item.kind?.toUpperCase() || 'ARCHIVO'}
                       </span>
-                      <span className="text-xs font-mono text-[#bcc9c7]">
-                        {item.ok} archivo{item.ok !== 1 ? 's' : ''}
-                        {item.fail > 0 && ` • ${item.fail} error${item.fail !== 1 ? 'es' : ''}`}
-                        {timeLabel && ` • ${timeLabel}`}
-                      </span>
+                      {displayMeta && (
+                        <span className="text-xs font-mono text-[#bcc9c7]">
+                          {displayMeta}
+                        </span>
+                      )}
+                      {timeLabel && (
+                        <span className="text-xs font-mono text-[#869391]">
+                          • {timeLabel}
+                        </span>
+                      )}
                     </div>
 
-                    {/* Files list */}
-                    {item.files && item.files.length > 0 && (
+                    {/* Files list (if more than 1 file) */}
+                    {item.files && item.files.length > 1 && (
                       <div className="flex flex-wrap gap-1.5 mt-1.5">
                         {item.files.slice(0, 3).map((f, fi) => (
                           <a
@@ -202,8 +228,8 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                   </div>
                 </div>
 
-                {/* ZIP download if available */}
-                {item.zip && (
+                {/* ZIP download strictly for multi-image galleries */}
+                {item.kind === 'image' && item.zip && (
                   <a
                     href={item.zip.url}
                     download={item.zip.name}
@@ -213,6 +239,20 @@ export default function HistoryView({ history = [], loading = false, onClearHist
                   >
                     <span className="material-symbols-outlined text-[18px]">folder_zip</span>
                     <span className="hidden sm:inline">ZIP</span>
+                  </a>
+                )}
+
+                {/* Direct download button for single files (video, audio, or single photo) */}
+                {!(item.kind === 'image' && item.zip) && item.files && item.files.length === 1 && (
+                  <a
+                    href={item.files[0].url}
+                    download={item.files[0].name}
+                    className="shrink-0 flex items-center gap-2 px-3.5 py-2 bg-[#5fd0c8]/15 hover:bg-[#5fd0c8] text-[#7dece4] hover:text-[#041014] border border-[#5fd0c8]/30 rounded-xl text-xs font-semibold font-mono transition-all shadow-[0_0_12px_rgba(95,208,200,0.12)] hover:shadow-[0_0_16px_rgba(95,208,200,0.3)] active:scale-95"
+                    title={`Descargar ${item.files[0].name}`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">download</span>
+                    <span className="hidden sm:inline">Descargar</span>
                   </a>
                 )}
               </div>
