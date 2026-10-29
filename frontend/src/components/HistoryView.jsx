@@ -285,7 +285,7 @@ export default function HistoryView({ history = [], loading = false, onClearHist
           </p>
         </div>
         <p className="text-center text-xs font-mono text-[#869391]">
-          Descarga solo contenido que tengas derecho a usar. Muxivo no almacena archivos de forma permanente.
+          Descarga solo contenido que tengas derecho a usar. Muvixo no almacena archivos de forma permanente.
         </p>
       </div>
     </div>

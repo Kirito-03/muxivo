@@ -8,12 +8,12 @@ export function InstallBanner({ onInstall, onDismiss }) {
 
       <div className="flex items-center gap-3 min-w-0 z-10">
         <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#0d101a] border border-[#3d4948]/70 flex items-center justify-center shrink-0 overflow-hidden shadow-[0_0_12px_rgba(95,208,200,0.25)]">
-          <img src="/icon.png" alt="Muxivo Logo" className="w-full h-full object-cover" />
+          <img src="/icon.png" alt="Muvixo Logo" className="w-full h-full object-cover" />
         </div>
         <div className="flex flex-col min-w-0 text-left">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-bold text-[#dee3e7] truncate">
-              Instalar Muxivo
+              Instalar Muvixo
             </span>
             <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#1E3640] text-[#5fd0c8]">
               PWA
@@ -58,10 +58,10 @@ export function InstallModal({ isOpen, onClose, isIOS }) {
         <div className="flex items-center justify-between pb-3 border-b border-[#1E3640]">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-lg bg-[#0d101a] border border-[#3d4948]/70 overflow-hidden flex items-center justify-center">
-              <img src="/icon.png" alt="Muxivo" className="w-full h-full object-cover" />
+              <img src="/icon.png" alt="Muvixo" className="w-full h-full object-cover" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-[#dee3e7]">Instalar Muxivo</h3>
+              <h3 className="text-base font-bold text-[#dee3e7]">Instalar Muvixo</h3>
               <p className="text-xs text-[#869391] font-mono">Acceso directo en tu teléfono</p>
             </div>
           </div>
@@ -77,7 +77,7 @@ export function InstallModal({ isOpen, onClose, isIOS }) {
         {isIOS ? (
           <div className="flex flex-col gap-3 text-xs text-[#bcc9c7] font-sans">
             <p className="text-xs text-[#dee3e7] font-medium">
-              Sigue estos pasos en Safari para instalar Muxivo en tu iPhone o iPad:
+              Sigue estos pasos en Safari para instalar Muvixo en tu iPhone o iPad:
             </p>
             <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#171c20] border border-[#1E3640]/80">
               <span className="w-6 h-6 rounded-full bg-[#252b2e] text-[#5fd0c8] font-mono font-bold flex items-center justify-center shrink-0 text-xs">
@@ -107,7 +107,7 @@ export function InstallModal({ isOpen, onClose, isIOS }) {
         ) : (
           <div className="flex flex-col gap-3 text-xs text-[#bcc9c7] font-sans">
             <p className="text-xs text-[#dee3e7] font-medium">
-              Para instalar Muxivo manualmente en tu navegador móvil:
+              Para instalar Muvixo manualmente en tu navegador móvil:
             </p>
             <div className="flex items-start gap-3 p-2.5 rounded-xl bg-[#171c20] border border-[#1E3640]/80">
               <span className="w-6 h-6 rounded-full bg-[#252b2e] text-[#5fd0c8] font-mono font-bold flex items-center justify-center shrink-0 text-xs">

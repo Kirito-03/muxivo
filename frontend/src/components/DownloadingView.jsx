@@ -103,7 +103,7 @@ export default function DownloadingView({ downloadItem, onCancel, onComplete }) 
               {error ? 'Error de descarga' : 'Extrayendo flujo de datos'}
             </span>
             <span className="font-mono text-[11px] text-[#bcc9c7] truncate">
-              {downloadItem?.url || 'muxivo.network/buffer'}
+              {downloadItem?.url || 'muvixo.art/buffer'}
             </span>
           </div>
         </div>

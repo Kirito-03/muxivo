@@ -145,7 +145,7 @@ export default function ErrorView({ errorData, onRetry, onPasteAnother, onClear 
       <div className="mt-2 px-3 py-3 rounded-xl bg-[#090f12] border border-[#1E3640] flex items-center gap-3">
         <span className="material-symbols-outlined text-[18px] text-[#7FA3A6] shrink-0">verified_user</span>
         <p className="text-xs font-mono text-[#869391] leading-snug">
-          Descarga solo contenido que tengas derecho a usar. Muxivo no almacena archivos en servidores.
+          Descarga solo contenido que tengas derecho a usar. Muvixo no almacena archivos en servidores.
         </p>
       </div>
 

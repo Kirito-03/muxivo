@@ -348,7 +348,7 @@ export default function VideoDetectionView({
 
           {/* Quick Platform Info */}
           <div className="bg-[#1b2024] border border-[#1E3640] rounded-2xl p-5 shadow-xl flex flex-col gap-3">
-            <h3 className="text-sm font-bold text-[#dee3e7]">Compatibilidad Muxivo</h3>
+            <h3 className="text-sm font-bold text-[#dee3e7]">Compatibilidad Muvixo</h3>
             <p className="text-xs text-[#bcc9c7] leading-relaxed">
               Soporta video, audio y colecciones completas desde las principales plataformas con conversión instantánea y cero compresión innecesaria.
             </p>

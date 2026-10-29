@@ -4,7 +4,7 @@ export default function Header({ currentTab, onSelectTab, showInstallBtn = false
   return (
     <header className="fixed top-0 w-full z-50 bg-[#060B0E]/90 backdrop-blur-md border-b border-[#1E3640]/60">
       <div className="h-16 max-w-[1440px] mx-auto px-4 sm:px-6 flex items-center justify-between">
-        {/* Logo Muxivo */}
+        {/* Logo Muvixo */}
         <button
           onClick={() => onSelectTab('descargar')}
           className="flex items-center gap-3 group text-left transition-transform active:scale-95"
@@ -12,13 +12,13 @@ export default function Header({ currentTab, onSelectTab, showInstallBtn = false
           <div className="w-9 h-9 rounded-lg bg-[#0d101a] border border-[#1E3640] flex items-center justify-center overflow-hidden shadow-[0_0_12px_rgba(95,208,200,0.22)] group-hover:border-[#5fd0c8] group-hover:shadow-[0_0_16px_rgba(95,208,200,0.45)] transition-all">
             <img
               src="/icon.png"
-              alt="Muxivo Logo"
+              alt="Muvixo Logo"
               className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-110"
             />
           </div>
           <div className="flex items-baseline">
-            <span className="text-[#dee3e7] text-xl font-bold tracking-tight lowercase">mux</span>
-            <span className="text-[#5fd0c8] text-xl font-bold tracking-tight lowercase drop-shadow-[0_0_8px_rgba(95,208,200,0.45)]">ivo</span>
+            <span className="text-[#dee3e7] text-xl font-bold tracking-tight lowercase">muv</span>
+            <span className="text-[#5fd0c8] text-xl font-bold tracking-tight lowercase drop-shadow-[0_0_8px_rgba(95,208,200,0.45)]">ixo</span>
           </div>
         </button>
 

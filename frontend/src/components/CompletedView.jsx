@@ -234,7 +234,7 @@ export default function CompletedView({ completedItem, onNewDownload }) {
           verified_user
         </span>
         <p className="text-xs font-mono text-[#869391] leading-relaxed">
-          Descarga solo contenido que tengas derecho a usar. Muxivo respeta la propiedad intelectual y los términos de servicio.
+          Descarga solo contenido que tengas derecho a usar. Muvixo respeta la propiedad intelectual y los términos de servicio.
         </p>
       </div>
 

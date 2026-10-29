@@ -238,7 +238,7 @@ export default function HomeView({
         {/* Legal Disclaimer Footer */}
         <div className="pt-2 w-full text-center">
           <p className="text-[#869391] text-xs font-mono max-w-lg mx-auto opacity-80 leading-relaxed">
-            Descarga solo contenido que tengas derecho a usar. Muxivo no almacena archivos en servidores.
+            Descarga solo contenido que tengas derecho a usar. Muvixo no almacena archivos en servidores.
           </p>
         </div>
       </div>

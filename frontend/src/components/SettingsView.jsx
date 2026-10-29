@@ -260,9 +260,9 @@ export default function SettingsView({ onClearHistory, isStandalone = false, onI
           <div className="flex items-center justify-between px-4 py-3 bg-[#171c20]">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-[#0d101a] border border-[#1E3640] overflow-hidden flex items-center justify-center shadow-[0_0_8px_rgba(95,208,200,0.2)]">
-                <img src="/icon.png" alt="Muxivo" className="w-full h-full object-cover" />
+                <img src="/icon.png" alt="Muvixo" className="w-full h-full object-cover" />
               </div>
-              <span className="text-sm font-semibold text-[#dee3e7]">Muxivo Web App</span>
+              <span className="text-sm font-semibold text-[#dee3e7]">Muvixo Web App</span>
             </div>
             <span className="font-mono text-xs text-[#7dece4] bg-[#252b2e] px-2.5 py-1 rounded-md border border-[#5fd0c8]/30">
               v1.2.0 (Phosphor Retro)
@@ -274,7 +274,7 @@ export default function SettingsView({ onClearHistory, isStandalone = false, onI
       {/* Footer */}
       <div className="pt-2 text-center">
         <p className="text-xs font-mono text-[#869391]">
-          Muxivo • Descarga solo contenido que tengas derecho a usar.
+          Muvixo • Descarga solo contenido que tengas derecho a usar.
         </p>
       </div>
     </div>
