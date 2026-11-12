@@ -88,19 +88,18 @@ def main() -> int:
     _save_filtered_jar(found_jar, REPO_ROOT / "www.tiktok.com_cookies.txt", ("tiktok.com",))
     print("📂 Actualizadas cookies locales en ./cookies/ y ./www.*_cookies.txt")
 
-    # 3. Intentar sincronizar con el VPS (dflux:/var/www/muxivo/cookies/) si está configurado en SSH
+    # 3. Sincronizar automáticamente con el Servidor Tablet (arle:~/server/cloud/proyectos/muxivo/)
     try:
-        vps_host = os.getenv("MUVIXO_VPS_HOST", "dflux").strip()
-        if vps_host:
-            p_vps = subprocess.run(
-                ["scp", "-r", str(REPO_ROOT / "cookies" / "instagram"), str(REPO_ROOT / "cookies" / "youtube"), str(REPO_ROOT / "cookies" / "tiktok"), f"{vps_host}:/var/www/muxivo/cookies/"],
-                capture_output=True, timeout=15, check=False,
-            )
-            if p_vps.returncode == 0:
-                subprocess.run(["ssh", vps_host, "chown -R 1000:1000 /var/www/muxivo/cookies"], capture_output=True, timeout=10, check=False)
-                print(f"🌐 Cookies sincronizadas en el VPS ({vps_host}:/var/www/muxivo/cookies/)")
-    except Exception:
-        pass
+        tablet_host = os.getenv("MUVIXO_SERVER_HOST", "arle").strip()
+        tablet_dir = "~/server/cloud/proyectos/muxivo"
+        p_tab = subprocess.run(
+            ["scp", "-r", str(REPO_ROOT / "cookies" / "instagram"), str(REPO_ROOT / "cookies" / "youtube"), str(REPO_ROOT / "cookies" / "tiktok"), f"{tablet_host}:{tablet_dir}/cookies/"],
+            capture_output=True, timeout=15, check=False,
+        )
+        if p_tab.returncode == 0:
+            print(f"📱 Cookies sincronizadas en el Servidor Tablet ({tablet_host}:{tablet_dir}/cookies/)")
+    except Exception as exc:
+        print(f"⚠️ Error al sincronizar con la tablet: {exc}")
 
     # 4. Intentar sincronizar con Termux vía HTTP (/cookies) o SCP
     worker_url = os.getenv("MEDIA_WORKER_URL", "http://100.95.206.57:5001").rstrip("/")
