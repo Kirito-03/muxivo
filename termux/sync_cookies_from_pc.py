@@ -101,28 +101,16 @@ def main() -> int:
     except Exception as exc:
         print(f"⚠️ Error al sincronizar con la tablet: {exc}")
 
-    # 4. Intentar sincronizar con Termux vía HTTP (/cookies) o SCP
-    worker_url = os.getenv("MEDIA_WORKER_URL", "http://100.95.206.57:5001").rstrip("/")
-    try:
-        r = requests.post(
-            f"{worker_url}/cookies",
-            json={"cookies_text": out_path.read_text(encoding="utf-8")},
-            timeout=5,
-        )
-        if r.status_code == 200 and (r.json() or {}).get("ok"):
-            print(f"🎉 ¡Cookies sincronizadas en Termux vía HTTP ({worker_url}/cookies)!")
+    # 4. (Opcional) Enviar al celular solo si se pasa como argumento manual
+    if len(sys.argv) > 1:
+        target = sys.argv[1]
+        print(f"📤 Enviando cookies por SCP a {target} ...")
+        proc = subprocess.run(["scp", "-o", "ConnectTimeout=5", str(out_path), target], check=False)
+        if proc.returncode == 0:
+            print(f"🎉 ¡Cookies sincronizadas en {target}!")
             return 0
-    except Exception:
-        pass
 
-    target = sys.argv[1] if len(sys.argv) > 1 else "termux:./cookies.txt"
-    print(f"📤 Enviando cookies por SCP a {target} ...")
-    proc = subprocess.run(["scp", str(out_path), target], check=False)
-    if proc.returncode == 0:
-        print("🎉 ¡Cookies sincronizadas en tu Termux (~/cookies.txt)!")
-        return 0
-
-    print(f"⚠️ El archivo combinado quedó listo en {out_path}")
+    print("🎉 ¡Cookies sincronizadas con éxito en la PC y en la Tablet arle!")
     return 0
 
 

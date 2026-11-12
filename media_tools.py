@@ -487,6 +487,7 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
     if p == "youtube":
         return [
             os.environ.get("MEDIA_DOWNLOADER_YOUTUBE_COOKIES_FILE") or "",
+            "cookies/youtube/current.txt",
             "/app/cookies/youtube/current.txt",
             "/app/cookies/youtube/backup_1.txt",
             "/app/cookies/youtube/backup_2.txt",
@@ -499,6 +500,7 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
         return [
             os.environ.get("MEDIA_DOWNLOADER_TIKTOK_COOKIES_FILE") or "",
             os.environ.get("MEDIA_DOWNLOADER_COOKIES_TIKTOK_FILE") or "",
+            "cookies/tiktok/current.txt",
             "/app/cookies/tiktok/current.txt",
             "/app/cookies/tiktok/backup_1.txt",
             "/app/cookies/tiktok/backup_2.txt",
@@ -510,6 +512,7 @@ def _cookiefile_candidates_for_platform(platform: str) -> List[str]:
         return [
             os.environ.get("MEDIA_DOWNLOADER_INSTAGRAM_COOKIES_FILE") or "",
             os.environ.get("MEDIA_DOWNLOADER_COOKIES_INSTAGRAM_FILE") or "",
+            "cookies/instagram/current.txt",
             "/app/cookies/instagram/current.txt",
             "/app/cookies/instagram/backup_1.txt",
             "/app/cookies/instagram/backup_2.txt",
