@@ -218,8 +218,6 @@ export default function App() {
       <Header
         currentTab={currentTab}
         onSelectTab={handleSelectTab}
-        showInstallBtn={!pwa.isStandalone}
-        onInstall={pwa.installApp}
       />
 
       {/* Main Content Area */}
@@ -237,9 +235,6 @@ export default function App() {
                   onAnalyzeUrl={handleAnalyzeUrl}
                   recentDownloads={history}
                   onRedownload={handleRedownload}
-                  showInstallBanner={pwa.showBanner}
-                  onInstall={pwa.installApp}
-                  onDismissInstall={pwa.dismissBanner}
                 />
               )}
 

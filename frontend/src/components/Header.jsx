@@ -23,19 +23,6 @@ export default function Header({ currentTab, onSelectTab, showInstallBtn = false
         </button>
 
         <div className="flex items-center gap-4 sm:gap-6">
-          {showInstallBtn && (
-            <button
-              onClick={onInstall}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#132228] hover:bg-[#1a2e37] border border-[#5fd0c8]/40 hover:border-[#5fd0c8] text-[#5fd0c8] text-xs font-mono font-semibold transition-all shadow-[0_0_10px_rgba(95,208,200,0.15)] active:scale-95"
-              title="Instalar como app en tu dispositivo"
-              id="header-install-btn"
-            >
-              <span className="material-symbols-outlined text-[16px]">install_mobile</span>
-              <span className="hidden sm:inline">Instalar app</span>
-              <span className="sm:hidden">Instalar</span>
-            </button>
-          )}
-
           {/* Desktop Navigation */}
           <nav className="hidden md:flex items-center gap-8">
           <button
