@@ -184,6 +184,9 @@ export function detectMediaType(rawUrl) {
   } else if (lower.includes('x.com') || lower.includes('twitter.com')) {
     platform = 'X / Twitter';
     platformIcon = 'public';
+  } else if (lower.includes('t.me') || lower.includes('telegram.me')) {
+    platform = 'Telegram';
+    platformIcon = 'send';
   }
 
   return {

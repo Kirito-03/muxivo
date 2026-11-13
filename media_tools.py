@@ -1171,9 +1171,23 @@ def _norm_pinterest(u: str) -> str:
     return u
 
 
+def _norm_telegram(u: str) -> str:
+    try:
+        s = (u or "").strip()
+        m = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]+)/(\d+)", s)
+        if m:
+            return f"https://t.me/{m.group(1)}/{m.group(2)}"
+    except Exception:
+        pass
+    return u
+
+
 def _normalize_url(u: str) -> str:
     if not u:
         return u
+    u = u.strip()
+    if u.startswith(("t.me/", "www.t.me/", "telegram.me/", "www.telegram.me/")):
+        u = "https://" + u
     try:
         host = urlparse(u).netloc.lower()
     except Exception:
@@ -1186,6 +1200,8 @@ def _normalize_url(u: str) -> str:
         return _norm_instagram(u)
     if "pinterest." in host or host == "pin.it":
         return _norm_pinterest(u)
+    if "t.me" in host or "telegram.me" in host or "telegram.dog" in host:
+        return _norm_telegram(u)
     if host.startswith("m."):
         p = urlparse(u)
         p = p._replace(netloc=host[2:])
@@ -3527,8 +3543,11 @@ def _detect_platform_id(url: str) -> str:
     """Identify the platform slug for any URL."""
     if not url:
         return "other"
+    norm = url.strip()
+    if not norm.startswith(("http://", "https://", "ftp://")):
+        norm = "https://" + norm
     try:
-        p = urlparse(url)
+        p = urlparse(norm)
         host = (p.netloc or "").lower()
         path = (p.path or "").lower()
     except Exception:
@@ -3558,6 +3577,8 @@ def _detect_platform_id(url: str) -> str:
         return "vimeo"
     if "pinterest." in host or "pin.it" in host:
         return "pinterest"
+    if "t.me" in host or "telegram.me" in host or "telegram.dog" in host:
+        return "telegram"
     if "dailymotion.com" in host or "dai.ly" in host:
         return "dailymotion"
     return "other"
@@ -3775,6 +3796,111 @@ def _sniff_pinterest_pin(url: str, timeout: float = 6.0) -> Dict[str, Any]:
     return res
 
 
+def _sniff_telegram_post(url: str, timeout: float = 6.0) -> Dict[str, Any]:
+    """Extract public media (video, audio, or photos) and metadata from a Telegram post via embed widget."""
+    res: Dict[str, Any] = {
+        "found": False,
+        "media_urls": [],
+        "image_urls": [],
+        "kind": "video",
+        "title": None,
+        "thumbnail": None,
+        "uploader": None,
+        "author": None,
+    }
+    m = re.search(r"(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]+)/(\d+)", url)
+    if not m:
+        return res
+    channel, msg_id = m.group(1), m.group(2)
+    embed_url = f"https://t.me/{channel}/{msg_id}?embed=1"
+    headers = {
+        "User-Agent": (os.environ.get("MEDIA_DOWNLOADER_UA") or _DEFAULT_UA).strip(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    try:
+        import requests
+
+        with requests.get(embed_url, headers=headers, timeout=max(2.0, float(timeout))) as resp:
+            if resp.status_code != 200:
+                return res
+            content = resp.text
+    except Exception:
+        return res
+
+    import html as html_lib
+
+    # Author / Channel Name
+    author_m = re.search(r"""<div class="tgme_widget_message_owner_name"[^>]*><span[^>]*>(.*?)</span>""", content, re.DOTALL)
+    author = html_lib.unescape(re.sub(r"<[^>]+>", "", author_m.group(1))).strip() if author_m else f"@{channel}"
+
+    # Text / Caption
+    text_m = re.search(r"""<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>""", content, re.DOTALL)
+    if text_m:
+        raw_text = html_lib.unescape(re.sub(r"<[^>]+>", "", text_m.group(1))).strip()
+        title = raw_text[:120].strip()
+    else:
+        title = f"Telegram post de @{channel}"
+
+    # Videos: <video src="..."
+    raw_vids = re.findall(r"""<video[^>]+src=[\x27"]([^\x27"]+)[\x27"]""", content)
+    vids = []
+    for v in raw_vids:
+        v = v.strip()
+        if v.startswith("http") and v not in vids:
+            vids.append(v)
+
+    # Audios / Voice notes: <audio src="..."
+    raw_audios = re.findall(r"""<audio[^>]+src=[\x27"]([^\x27"]+)[\x27"]""", content)
+    audios = []
+    for a in raw_audios:
+        a = a.strip()
+        if a.startswith("http") and a not in audios:
+            audios.append(a)
+
+    # Photos: background-image:url(...)
+    raw_imgs = re.findall(r"""background-image:\s*url\([\x27"]?([^\x27"\)]+)[\x27"]?\)""", content)
+    imgs = []
+    for img in raw_imgs:
+        img = img.strip()
+        if not img.startswith("http"):
+            if img.startswith("//"):
+                img = "https:" + img
+            else:
+                continue
+        # Exclude telegram emoji icons, UI avatars, or generic sprites
+        if "/emoji/" in img or "/avatar/" in img or "telegram.org/img/" in img:
+            continue
+        if img not in imgs:
+            imgs.append(img)
+
+    if not vids and not audios and not imgs:
+        return res
+
+    if vids:
+        kind = "video"
+        media_urls = vids
+        thumb = imgs[0] if imgs else None
+    elif audios:
+        kind = "audio"
+        media_urls = audios
+        thumb = imgs[0] if imgs else None
+    else:
+        kind = "imagen"
+        media_urls = imgs
+        thumb = imgs[0] if imgs else None
+
+    res["found"] = True
+    res["kind"] = kind
+    res["media_urls"] = media_urls
+    res["image_urls"] = imgs
+    res["title"] = title
+    res["thumbnail"] = thumb
+    res["uploader"] = author
+    res["author"] = author
+    return res
+
+
 def _extract_html_meta_and_media(html_text: str, base_url: str) -> Dict[str, Any]:
     """Parse HTML string for OpenGraph/Twitter metadata and embedded video/audio/iframe URLs."""
     import html as _html
@@ -3928,6 +4054,14 @@ def sniff_media_from_webpage(
             pin["referer"] = "https://www.pinterest.com/"
             _SNIFF_CACHE[norm_u] = (now, pin)
             return dict(pin)
+
+    # 1c. Telegram fast embed API (public posts with video, audio, or images)
+    if platform_id == "telegram":
+        tg = _sniff_telegram_post(norm_u)
+        if tg.get("found"):
+            tg["referer"] = "https://t.me/"
+            _SNIFF_CACHE[norm_u] = (now, tg)
+            return dict(tg)
 
     # 2. Fast HTTP / HTML scan
     html_meta: Dict[str, Any] = {}
@@ -4315,6 +4449,18 @@ def fetch_fast_metadata(url: str) -> Dict[str, Any]:
             if out["title"] or out["thumbnail"]:
                 return out
 
+        # 5c. Telegram via embed sniffer
+        if out["platform"] == "telegram":
+            tg = _sniff_telegram_post(url, timeout=4.0)
+            if tg.get("title"):
+                out["title"] = tg["title"]
+            if tg.get("thumbnail"):
+                out["thumbnail"] = tg["thumbnail"]
+            if tg.get("uploader") or tg.get("author"):
+                out["creator"] = tg.get("uploader") or tg.get("author")
+            if out["title"] or out["thumbnail"]:
+                return out
+
         # 6. Generic OpenGraph / HTML metadata for any public URL
         if _is_safe_public_url(url):
             try:
@@ -4548,6 +4694,46 @@ def probe_media_capabilities(
                 "thumbnail": tw.get("thumbnail"),
                 "uploader": tw.get("uploader"),
                 "image_candidates": tw_imgs,
+                "auth_required": False,
+                "used_cookies": False,
+            }
+
+    # Fast detection for Telegram (video, audio or image/gallery posts in <0.4s)
+    if platform == "telegram":
+        tg = _sniff_telegram_post(url, timeout=6.0)
+        if tg.get("found"):
+            is_vid = tg.get("kind") == "video"
+            is_aud = tg.get("kind") == "audio"
+            tg_imgs = [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(tg.get("image_urls") or [], start=1)
+                if u
+            ]
+            if is_vid:
+                allowed = ["audio", "video"]
+                det = "video"
+                summary = tg.get("title") or "Telegram: video detectado"
+            elif is_aud:
+                allowed = ["audio"]
+                det = "audio"
+                summary = tg.get("title") or "Telegram: audio detectado"
+            else:
+                allowed = ["imagen"]
+                det = "imagen"
+                summary = tg.get("title") or "Telegram: imagen detectada"
+            return {
+                "url": url,
+                "platform": "telegram",
+                "supports_audio": is_vid or is_aud,
+                "supports_video": is_vid,
+                "supports_image": not (is_vid or is_aud),
+                "allowed_kinds": allowed,
+                "detected_kind": det,
+                "summary": summary,
+                "title": tg.get("title"),
+                "thumbnail": tg.get("thumbnail"),
+                "uploader": tg.get("uploader") or tg.get("author"),
+                "image_candidates": tg_imgs,
                 "auth_required": False,
                 "used_cookies": False,
             }
@@ -5020,6 +5206,15 @@ def probe_image_candidates(
             return [
                 {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
                 for i, u in enumerate(tw["image_urls"][: max(1, int(max_items))], start=1)
+                if u
+            ]
+
+    if plat_id == "telegram":
+        tg = _sniff_telegram_post(url, timeout=6.0)
+        if tg.get("image_urls"):
+            return [
+                {"url": u, "thumb": u, "label": f"IMAGE {i}", "kind": "image"}
+                for i, u in enumerate(tg["image_urls"][: max(1, int(max_items))], start=1)
                 if u
             ]
 
@@ -5816,6 +6011,34 @@ def download_with_ytdlp(
                                 continue
                     except Exception as e:
                         print(f"[TIKTOK-PW] Error inesperado, usando fallback yt-dlp: {type(e).__name__}", flush=True)
+
+                    if _detect_platform_id(url) == "telegram":
+                        tg_meta = _sniff_telegram_post(url, timeout=6.0)
+                        if tg_meta.get("found") and tg_meta.get("media_urls"):
+                            tg_vids = tg_meta["media_urls"]
+                            orig_outtmpl = ydl.params.get("outtmpl")
+                            orig_headers = dict(ydl.params.get("http_headers") or {})
+                            sniff_title = (tg_meta.get("title") or "").strip()
+                            if sniff_title:
+                                safe_stem = re.sub(r"""[\\/:*?"<>|\r\n\t+]+""", " ", sniff_title).strip(" ._")[:80]
+                                if safe_stem:
+                                    tmpl_str = str(out_dir / f"{safe_stem}.%(ext)s")
+                                    ydl.params["outtmpl"] = {"default": tmpl_str} if isinstance(orig_outtmpl, dict) else tmpl_str
+                            new_headers = dict(orig_headers)
+                            new_headers["Referer"] = "https://t.me/"
+                            ydl.params["http_headers"] = new_headers
+                            before_tg = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
+                            err = _run_download(ydl, tg_vids[0])
+                            ydl.params["outtmpl"] = orig_outtmpl
+                            ydl.params["http_headers"] = orig_headers
+                            after_tg = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
+                            if len(after_tg - before_tg) > 0:
+                                err = None
+                            if err:
+                                fails.append((url, err))
+                            else:
+                                time.sleep(float(sleep_between))
+                            continue
 
                     before_single = set(p.resolve() for p in out_dir.rglob("*") if p.is_file())
                     err = _run_download(ydl, url)

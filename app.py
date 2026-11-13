@@ -1394,7 +1394,7 @@ def api_detect():
                 if len(urls_set) < len(image_candidates):
                     should_try_worker = True
                     print("[WORKER] fallback reason=instagram_gallery_repeated_items", flush=True)
-        elif platform in ("tiktok", "pinterest", "twitter") and not allowed_front and not image_candidates:
+        elif platform in ("tiktok", "pinterest", "twitter", "telegram") and not allowed_front and not image_candidates:
             should_try_worker = True
             print(f"[WORKER] fallback reason={platform}_detect_empty", flush=True)
 
@@ -1504,6 +1504,8 @@ def api_thumb():
             ref = "https://www.pinterest.com/"
         elif "tiktokcdn" in host or "tiktok.com" in host:
             ref = "https://www.tiktok.com/"
+        elif "telesco.pe" in host or "telegram" in host or host.endswith("t.me"):
+            ref = "https://t.me/"
 
     cached = _cache_preview_image(u, referer=ref)
     if not cached and ref != "https://www.instagram.com/":
@@ -1615,6 +1617,8 @@ def api_download():
             return "Vimeo"
         if "pinterest." in host or "pin.it" in host:
             return "Pinterest"
+        if "t.me" in host or "telegram.me" in host or "telegram.dog" in host:
+            return "Telegram"
         if "dailymotion.com" in host or "dai.ly" in host:
             return "Dailymotion"
         clean_h = host.replace("www.", "")

@@ -28,6 +28,7 @@ const PLATFORM_LABELS = {
   twitch: 'Twitch',
   vimeo: 'Vimeo',
   pinterest: 'Pinterest',
+  telegram: 'Telegram',
   dailymotion: 'Dailymotion',
   direct: 'Enlace directo',
   other: 'Web',
