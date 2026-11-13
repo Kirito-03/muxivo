@@ -23,7 +23,7 @@ import yt_dlp
 from yt_dlp.utils import DownloadError
 
 PLAYLIST_CHUNK_SIZE = 75  # itens por lote
-IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
+IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
 VIDEO_EXTS = {"mp4", "mkv", "webm", "mov"}
 
 

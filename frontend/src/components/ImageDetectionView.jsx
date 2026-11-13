@@ -19,6 +19,9 @@ export default function ImageDetectionView({
   const totalPhotos = rawPhotos.length;
   const isMultiPhoto = totalPhotos > 1;
 
+  const currentPhoto = rawPhotos[photoIndex] || '';
+  const isGif = typeof currentPhoto === 'string' && currentPhoto.toLowerCase().includes('.gif');
+
   const toPreviewUrl = (u) => {
     if (!u) return '';
     if (u.startsWith('/files/thumb')) return u;
@@ -45,11 +48,13 @@ export default function ImageDetectionView({
     }
   };
 
-  const buttonLabel = !isMultiPhoto
-    ? `Descargar Imagen (${format})`
-    : scope === 'all'
-      ? `Descargar Galería (${totalPhotos} fotos • ${format})`
-      : `Descargar Foto ${photoIndex + 1} (${format})`;
+  const buttonLabel = isGif
+    ? 'Descargar GIF Animado'
+    : !isMultiPhoto
+      ? `Descargar Imagen (${format})`
+      : scope === 'all'
+        ? `Descargar Galería (${totalPhotos} fotos • ${format})`
+        : `Descargar Foto ${photoIndex + 1} (${format})`;
 
   const handleDownload = () => {
     // Collect image URLs to download
@@ -63,10 +68,12 @@ export default function ImageDetectionView({
       imageUrls = candidate ? [candidate.url] : undefined;
     }
 
+    const chosenFormat = isGif ? 'gif' : format.toLowerCase();
+
     onStartDownload({
       url: mediaData.url,
       kind: 'image',
-      format_id: format.toLowerCase(),
+      format_id: chosenFormat,
       detail: '',
       sessionId,
       imageUrls: imageUrls && imageUrls.length > 0 ? imageUrls : undefined,
@@ -76,7 +83,9 @@ export default function ImageDetectionView({
       platform: mediaData.platform,
       type: 'image',
       thumbnail: toPreviewUrl(rawPhotos[photoIndex]) || null,
-      format: `${isMultiPhoto && scope === 'all' ? 'Galería' : 'Imagen'} ${format} • ${isMultiPhoto && scope === 'all' ? `${totalPhotos} fotos` : '1 foto'}`,
+      format: isGif
+        ? 'GIF animado'
+        : `${isMultiPhoto && scope === 'all' ? 'Galería' : 'Imagen'} ${format} • ${isMultiPhoto && scope === 'all' ? `${totalPhotos} fotos` : '1 foto'}`,
     });
   };
 
@@ -205,7 +214,7 @@ export default function ImageDetectionView({
               )}
             </div>
             <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-mono text-xs font-semibold border border-amber-500/30">
-              {isMultiPhoto ? `Galería (${totalPhotos})` : 'Imagen'}
+              {isGif ? 'GIF Animado' : isMultiPhoto ? `Galería (${totalPhotos})` : 'Imagen'}
             </span>
           </div>
           <h2 className="text-xl sm:text-2xl text-[#dee3e7] font-bold leading-snug">
@@ -256,62 +265,81 @@ export default function ImageDetectionView({
             </div>
           )}
 
-          {/* Format (JPG vs PNG) */}
+          {/* Format (JPG vs PNG or GIF) */}
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-mono text-[#bcc9c7] uppercase tracking-wider">
               Formato:
             </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setFormat('JPG')}
-                className={`flex items-center justify-between p-3 rounded-xl text-left transition-all ${
-                  format === 'JPG'
-                    ? 'bg-[#252b2e] border-2 border-[#5fd0c8] shadow-[0_0_12px_rgba(95,208,200,0.2)]'
-                    : 'bg-[#171c20] border border-[#1E3640] hover:bg-[#252b2e]'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm font-bold ${format === 'JPG' ? 'text-[#7dece4]' : 'text-[#dee3e7]'}`}>
-                    JPG
-                  </span>
-                  <span className="text-xs font-mono text-[#bcc9c7]">(3.2 MB)</span>
-                </div>
-                {format === 'JPG' && (
+            {isGif ? (
+              <div className="grid grid-cols-1 gap-2">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#252b2e] border-2 border-[#5fd0c8] shadow-[0_0_12px_rgba(95,208,200,0.2)]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-[#7dece4]">
+                      GIF Animado
+                    </span>
+                    <span className="text-xs font-mono text-[#bcc9c7]">(Original)</span>
+                  </div>
                   <span
                     className="material-symbols-outlined text-[#7dece4] text-[18px]"
                     style={{ fontVariationSettings: "'FILL' 1" }}
                   >
                     check_circle
                   </span>
-                )}
-              </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormat('JPG')}
+                  className={`flex items-center justify-between p-3 rounded-xl text-left transition-all ${
+                    format === 'JPG'
+                      ? 'bg-[#252b2e] border-2 border-[#5fd0c8] shadow-[0_0_12px_rgba(95,208,200,0.2)]'
+                      : 'bg-[#171c20] border border-[#1E3640] hover:bg-[#252b2e]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-bold ${format === 'JPG' ? 'text-[#7dece4]' : 'text-[#dee3e7]'}`}>
+                      JPG
+                    </span>
+                    <span className="text-xs font-mono text-[#bcc9c7]">(3.2 MB)</span>
+                  </div>
+                  {format === 'JPG' && (
+                    <span
+                      className="material-symbols-outlined text-[#7dece4] text-[18px]"
+                      style={{ fontVariationSettings: "'FILL' 1" }}
+                    >
+                      check_circle
+                    </span>
+                  )}
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setFormat('PNG')}
-                className={`flex items-center justify-between p-3 rounded-xl text-left transition-all ${
-                  format === 'PNG'
-                    ? 'bg-[#252b2e] border-2 border-[#5fd0c8] shadow-[0_0_12px_rgba(95,208,200,0.2)]'
-                    : 'bg-[#171c20] border border-[#1E3640] hover:bg-[#252b2e]'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm font-bold ${format === 'PNG' ? 'text-[#7dece4]' : 'text-[#dee3e7]'}`}>
-                    PNG
-                  </span>
-                  <span className="text-xs font-mono text-[#bcc9c7]">(9.8 MB)</span>
-                </div>
-                {format === 'PNG' && (
-                  <span
-                    className="material-symbols-outlined text-[#7dece4] text-[18px]"
-                    style={{ fontVariationSettings: "'FILL' 1" }}
-                  >
-                    check_circle
-                  </span>
-                )}
-              </button>
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setFormat('PNG')}
+                  className={`flex items-center justify-between p-3 rounded-xl text-left transition-all ${
+                    format === 'PNG'
+                      ? 'bg-[#252b2e] border-2 border-[#5fd0c8] shadow-[0_0_12px_rgba(95,208,200,0.2)]'
+                      : 'bg-[#171c20] border border-[#1E3640] hover:bg-[#252b2e]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-bold ${format === 'PNG' ? 'text-[#7dece4]' : 'text-[#dee3e7]'}`}>
+                      PNG
+                    </span>
+                    <span className="text-xs font-mono text-[#bcc9c7]">(9.8 MB)</span>
+                  </div>
+                  {format === 'PNG' && (
+                    <span
+                      className="material-symbols-outlined text-[#7dece4] text-[18px]"
+                      style={{ fontVariationSettings: "'FILL' 1" }}
+                    >
+                      check_circle
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
