@@ -9,9 +9,11 @@ createRoot(document.getElementById('root')).render(
   </StrictMode>,
 )
 
-// Limpiar caché antigua que ignoraba query strings en /api/thumb y actualizar Service Worker
+// Limpiar cachés antiguas y actualizar Service Worker
 if ('caches' in window) {
   caches.delete('muxivo-pwa-v1').catch(() => {});
+  caches.delete('muxivo-pwa-v2').catch(() => {});
+  caches.delete('muxivo-pwa-v3').catch(() => {});
 }
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

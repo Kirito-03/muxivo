@@ -1,4 +1,4 @@
-const CACHE_NAME = "muvixo-pwa-v3"
+const CACHE_NAME = "muvixo-pwa-v4"
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -9,8 +9,10 @@ self.addEventListener("install", (event) => {
         "/manifest.webmanifest",
         "/icon.png",
         "/icon-apk.png",
-        "/logo.svg",
         "/favicon.ico",
+        "/favicon-32x32.png",
+        "/favicon-16x16.png",
+        "/apple-touch-icon.png",
       ])
       await self.skipWaiting()
     })()

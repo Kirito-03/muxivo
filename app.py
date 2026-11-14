@@ -887,9 +887,49 @@ def react_favicon_svg():
 def react_favicon_ico():
     p = (ROOT_DIR / "frontend" / "dist" / "favicon.ico").resolve()
     if not p.exists():
+        p = (ROOT_DIR / "favicon.ico").resolve()
+    if not p.exists():
         p = (ROOT_DIR / "icon.png").resolve()
     if p.exists():
-        return send_file(str(p), mimetype="image/x-icon", max_age=3600)
+        resp = send_file(str(p), mimetype="image/x-icon")
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+        return resp
+    abort(404)
+
+
+@app.get("/favicon-32x32.png")
+def favicon_32():
+    p = (ROOT_DIR / "frontend" / "dist" / "favicon-32x32.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "favicon-32x32.png").resolve()
+    if p.exists():
+        resp = send_file(str(p), mimetype="image/png")
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+        return resp
+    abort(404)
+
+
+@app.get("/favicon-16x16.png")
+def favicon_16():
+    p = (ROOT_DIR / "frontend" / "dist" / "favicon-16x16.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "favicon-16x16.png").resolve()
+    if p.exists():
+        resp = send_file(str(p), mimetype="image/png")
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+        return resp
+    abort(404)
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    p = (ROOT_DIR / "frontend" / "dist" / "apple-touch-icon.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "apple-touch-icon.png").resolve()
+    if p.exists():
+        resp = send_file(str(p), mimetype="image/png")
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+        return resp
     abort(404)
 
 
@@ -906,7 +946,9 @@ def manifest():
     p = (ROOT_DIR / "manifest.webmanifest").resolve()
     if not p.exists():
         abort(404)
-    return send_file(p, mimetype="application/manifest+json", max_age=3600)
+    resp = send_file(p, mimetype="application/manifest+json")
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @app.get("/service-worker.js")
@@ -914,30 +956,35 @@ def service_worker():
     p = (ROOT_DIR / "service-worker.js").resolve()
     if not p.exists():
         abort(404)
-    resp = send_file(p, mimetype="application/javascript", max_age=0)
-    try:
-        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        resp.headers["Pragma"] = "no-cache"
-        resp.headers["Expires"] = "0"
-    except Exception:
-        pass
+    resp = send_file(p, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
     return resp
 
 
 @app.get("/icon-apk.png")
 def icon_apk():
-    p = (ROOT_DIR / "icon-apk.png").resolve()
+    p = (ROOT_DIR / "frontend" / "dist" / "icon-apk.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "icon-apk.png").resolve()
     if not p.exists():
         abort(404)
-    return send_file(p, mimetype="image/png", max_age=3600)
+    resp = send_file(p, mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @app.get("/icon.png")
 def icon_png():
-    p = (ROOT_DIR / "icon.png").resolve()
+    p = (ROOT_DIR / "frontend" / "dist" / "icon.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "icon.png").resolve()
     if not p.exists():
         abort(404)
-    return send_file(p, mimetype="image/png", max_age=3600)
+    resp = send_file(p, mimetype="image/png")
+    resp.headers["Cache-Control"] = "no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @app.get("/files/<path:relpath>")
