@@ -9,12 +9,12 @@
   "icons": [
     {
       "src": "/icon.png",
-      "sizes": "59x61",
+      "sizes": "512x512",
       "type": "image/png"
     },
     {
       "src": "/icon-apk.png",
-      "sizes": "135x134",
+      "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }

@@ -855,6 +855,26 @@ def react_logo_svg():
     abort(404)
 
 
+@app.get("/logo.png")
+def logo_png():
+    p = (ROOT_DIR / "frontend" / "dist" / "logo.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "logo.png").resolve()
+    if p.exists():
+        return send_file(p, mimetype="image/png", max_age=3600)
+    abort(404)
+
+
+@app.get("/logo-dark.png")
+def logo_dark_png():
+    p = (ROOT_DIR / "frontend" / "dist" / "logo-dark.png").resolve()
+    if not p.exists():
+        p = (ROOT_DIR / "logo-dark.png").resolve()
+    if p.exists():
+        return send_file(p, mimetype="image/png", max_age=3600)
+    abort(404)
+
+
 @app.get("/favicon.svg")
 def react_favicon_svg():
     p = (ROOT_DIR / "frontend" / "dist" / "favicon.svg").resolve()

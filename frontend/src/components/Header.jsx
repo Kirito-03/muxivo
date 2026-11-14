@@ -7,19 +7,14 @@ export default function Header({ currentTab, onSelectTab, showInstallBtn = false
         {/* Logo Muvixo */}
         <button
           onClick={() => onSelectTab('descargar')}
-          className="flex items-center gap-3 group text-left transition-transform active:scale-95"
+          className="flex items-center group text-left transition-transform active:scale-95"
+          title="Muvixo - Inicio"
         >
-          <div className="w-9 h-9 rounded-lg bg-[#0d101a] border border-[#1E3640] flex items-center justify-center overflow-hidden shadow-[0_0_12px_rgba(95,208,200,0.22)] group-hover:border-[#5fd0c8] group-hover:shadow-[0_0_16px_rgba(95,208,200,0.45)] transition-all">
-            <img
-              src="/icon.png"
-              alt="Muvixo Logo"
-              className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-110"
-            />
-          </div>
-          <div className="flex items-baseline">
-            <span className="text-[#dee3e7] text-xl font-bold tracking-tight lowercase">muv</span>
-            <span className="text-[#5fd0c8] text-xl font-bold tracking-tight lowercase drop-shadow-[0_0_8px_rgba(95,208,200,0.45)]">ixo</span>
-          </div>
+          <img
+            src="/logo-dark.png"
+            alt="Muvixo"
+            className="h-8 sm:h-9 w-auto object-contain transition-transform duration-200 group-hover:scale-105 drop-shadow-[0_0_12px_rgba(95,208,200,0.25)]"
+          />
         </button>
 
         <div className="flex items-center gap-4 sm:gap-6">
